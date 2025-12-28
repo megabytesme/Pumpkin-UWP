@@ -1,0 +1,106 @@
+[package]
+name = "pumpkin"
+version.workspace = true
+description = "Empowering everyone to host fast and efficient Minecraft servers."
+edition.workspace = true
+rust-version = "1.89"
+
+[package.metadata.tauri-winres]
+# FileDescription is handled as the Program name by Windows!
+FileDescription = "Pumpkin"
+OriginalFilename = "pumpkin.exe"
+LegalCopyright = "Copyright © 2025 Aleksander Medvedev"
+
+# Required to expose pumpkin plugin API
+[lib]
+crate-type = ["cdylib"]
+doctest = false
+
+[[bin]]
+name = "pumpkin"
+path = "src/main.rs"
+required-features = ["build-binary"]
+
+[dependencies]
+# pumpkin
+pumpkin-util = { path = "../pumpkin-util" }
+pumpkin-nbt = { path = "../pumpkin-nbt" }
+pumpkin-config = { path = "../pumpkin-config" }
+pumpkin-inventory = { path = "../pumpkin-inventory" }
+pumpkin-world = { path = "../pumpkin-world" }
+pumpkin-data = { path = "../pumpkin-data" }
+pumpkin-protocol = { path = "../pumpkin-protocol" }
+pumpkin-registry = { path = "../pumpkin-registry" }
+pumpkin-macros = { path = "../pumpkin-macros" }
+
+log.workspace = true
+crossbeam.workspace = true
+uuid.workspace = true
+tokio = { workspace = true, features = [
+    "macros",
+    "net",
+    "rt-multi-thread",
+    "sync",
+    "io-std",
+    "signal",
+    "fs",
+    "io-util",
+    "time",
+] }
+thiserror.workspace = true
+futures.workspace = true
+
+# config
+serde.workspace = true
+serde_json.workspace = true
+
+bytes.workspace = true
+
+rand = "=0.10.0-rc.5"
+
+num-bigint = "0.4"
+
+# Console line reading
+rustyline-async = "0.4.7"
+
+# encryption
+rsa = { version = "=0.10.0-rc.10", features = ["sha1"] }
+pkcs8 = "=0.11.0-rc.8"
+
+# authentication
+ureq = { version = "3.1.4", features = [
+    "json",
+] }
+
+
+sha1 = "=0.11.0-rc.3"
+
+# velocity en
+hmac = "=0.13.0-rc.3"
+sha2 = "=0.11.0-rc.3"
+
+base64 = "0.22.1"
+
+# logging
+simplelog = { version = "0.12.2", features = ["ansi_term"] }
+
+# Remove time in favor of chrono?
+time = { version = "0.3", features = ["parsing", "macros"] }
+
+# plugins
+libloading = "0.9"
+rustc-hash = "2.1.1"
+
+# Task handling
+tokio-util = { version = "0.7.17", features = ["rt"] }
+
+flate2 = "1.1.5"
+console-subscriber = { version = "0.5.0", default-features= false, optional = true }
+signature = "2.2.0"
+[dev-dependencies]
+tempfile.workspace = true
+
+[features]
+build-binary = []
+console-subscriber = ["dep:console-subscriber"]
+tokio_taskdump = ["pumpkin-world/tokio_taskdump"]

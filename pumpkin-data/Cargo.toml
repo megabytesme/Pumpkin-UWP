@@ -1,0 +1,28 @@
+[package]
+name = "pumpkin-data"
+version.workspace = true
+edition.workspace = true
+build = "build/build.rs"
+
+[dependencies]
+phf = { version = "0.13.1", features = ["macros"] }
+pumpkin-util = { path = "../pumpkin-util" }
+pumpkin-nbt = { path = "../pumpkin-nbt" }
+
+serde.workspace = true
+crc-fast = "1.9.0"
+
+[build-dependencies]
+pumpkin-util = { path = "../pumpkin-util" }
+pumpkin-nbt = { path = "../pumpkin-nbt" }
+
+serde.workspace = true
+serde_json.workspace = true
+
+serde_json5 = "0.2.1"
+heck = "0.5"
+proc-macro2 = "1.0"
+quote = "1.0"
+syn.workspace = true
+
+rayon.workspace = true

@@ -1,0 +1,18 @@
+[package]
+name = "pumpkin-inventory"
+version.workspace = true
+edition.workspace = true
+rust-version = "1.87"
+
+[dependencies]
+pumpkin-protocol = { path = "../pumpkin-protocol" }
+pumpkin-data = { path = "../pumpkin-data" }
+
+pumpkin-world = { path = "../pumpkin-world" }
+pumpkin-util = { path = "../pumpkin-util" }
+
+log.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+crossbeam-utils = "0.8.21"
+

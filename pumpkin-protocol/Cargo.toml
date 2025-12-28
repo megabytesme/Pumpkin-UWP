@@ -1,0 +1,37 @@
+[package]
+name = "pumpkin-protocol"
+version.workspace = true
+edition.workspace = true
+
+[features]
+default = ["query"]
+serverbound = []
+clientbound = []
+query = []
+
+[dependencies]
+pumpkin-nbt = { path = "../pumpkin-nbt" }
+pumpkin-data = { path = "../pumpkin-data" }
+pumpkin-macros = { path = "../pumpkin-macros" }
+pumpkin-world = { path = "../pumpkin-world" }
+pumpkin-util = { path = "../pumpkin-util" }
+
+uuid.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+bytes.workspace = true
+
+# encryption
+aes = "0.8"
+cfb8 = "0.8"
+
+# compression
+async-compression = { version = "0.4.36", features = ["tokio", "zlib"] }
+
+take_mut = "0.2.2"
+bitflags = "2.10.0"
+
+[dev-dependencies]
+# Validate correctness
+flate2 = "1.1.5"
