@@ -86,7 +86,7 @@ impl SerializedPlayer {
             },
             rotation_yaw: entity.yaw.load(),
             rotation_pitch: entity.pitch.load(),
-            dimension: format!("{:?}", entity.world.dimension_type),
+            dimension: format!("{:?}", entity.world.dimension.minecraft_name),
             is_sneaking: entity.sneaking.load(Ordering::Relaxed),
             is_sprinting: entity.sprinting.load(Ordering::Relaxed),
         }
