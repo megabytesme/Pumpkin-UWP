@@ -1,9 +1,12 @@
+use std::time::Instant;
+
 use num_bigint::BigInt;
 use pkcs8::EncodePublicKey;
 use pumpkin_protocol::java::client::login::CEncryptionRequest;
 use rsa::{Pkcs1v15Encrypt, RsaPrivateKey};
 use sha1::Sha1;
 use sha2::Digest;
+use tracing::debug;
 
 use crate::net::EncryptionError;
 
@@ -15,7 +18,8 @@ pub struct KeyStore {
 impl KeyStore {
     #[must_use]
     pub fn new() -> Self {
-        log::debug!("Creating encryption keys...");
+        let instant = Instant::now();
+        debug!("Creating encryption keys...");
         let private_key = Self::generate_private_key();
 
         let public_key = private_key.to_public_key();
@@ -23,9 +27,10 @@ impl KeyStore {
         let public_key_der = public_key
             .to_public_key_der()
             .expect("Failed to encode public key to SPKI DER")
-            .as_bytes()
-            .to_vec()
+            .into_vec()
             .into_boxed_slice();
+
+        debug!("Created RSA keys, took {}ms", instant.elapsed().as_millis());
 
         Self {
             private_key,
@@ -34,10 +39,8 @@ impl KeyStore {
     }
 
     fn generate_private_key() -> RsaPrivateKey {
-        // Found out that OsRng is faster than rand::thread_rng here
         let mut rng = rand::rng();
 
-        // let pub_key = RsaPublicKey::from(&priv_key);
         RsaPrivateKey::new(&mut rng, 1024).expect("Failed to generate a key")
     }
 

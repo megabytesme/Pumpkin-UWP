@@ -2,7 +2,8 @@
 name = "pumpkin-inventory"
 version.workspace = true
 edition.workspace = true
-rust-version = "1.87"
+rust-version.workspace = true
+license.workspace = true
 
 [dependencies]
 pumpkin-protocol.workspace = true
@@ -11,7 +12,10 @@ pumpkin-data.workspace = true
 pumpkin-world.workspace = true
 pumpkin-util.workspace = true
 
-log.workspace = true
+tracing.workspace = true
 tokio.workspace = true
 thiserror.workspace = true
 crossbeam-utils.workspace = true
+
+[lints]
+workspace = true

@@ -1,5 +1,3 @@
-use pumpkin_util::{math::vector3::Vector3, text::TextComponent};
-
 use crate::command::{
     CommandError, CommandExecutor, CommandResult, CommandSender,
     args::{
@@ -8,6 +6,8 @@ use crate::command::{
     },
     tree::{CommandTree, builder::argument},
 };
+use pumpkin_util::{math::vector3::Vector3, text::TextComponent};
+use pumpkin_world::block::entities::BlockEntity;
 const NAMES: [&str; 1] = ["particle"];
 
 const DESCRIPTION: &str = "Spawns a Particle at position.";
@@ -40,15 +40,15 @@ impl CommandExecutor for Executor {
             let speed = speed.unwrap_or(Ok(0.0))?;
             let count = count.unwrap_or(Ok(0))?;
             let (world, pos) = match sender {
-                CommandSender::Console | CommandSender::Rcon(_) => {
-                    let guard = server.worlds.read().await;
+                CommandSender::Console | CommandSender::Rcon(_) | CommandSender::Dummy => {
+                    let guard = server.worlds.load();
                     let world = guard
                         .first()
                         .cloned()
                         .ok_or(CommandError::InvalidRequirement)?;
                     // default position for spawning a player, in this case for particle
                     let pos = {
-                        let info = &world.level_info.read().await;
+                        let info = &world.level_info.load();
                         // default position for spawning a player, in this case for mob
                         pos.unwrap_or(Vector3::new(
                             f64::from(info.spawn_x) + 0.5,
@@ -62,7 +62,10 @@ impl CommandExecutor for Executor {
                 CommandSender::Player(player) => {
                     let pos = pos.unwrap_or(player.living_entity.entity.pos.load());
 
-                    (player.world().clone(), pos)
+                    (player.world(), pos)
+                }
+                CommandSender::CommandBlock(c, w) => {
+                    (w.clone(), c.get_position().to_centered_f64())
                 }
             };
 
@@ -77,7 +80,8 @@ impl CommandExecutor for Executor {
                 ))
                 .await;
 
-            Ok(())
+            // TODO: Add `viewers` arguments and change the logic for this result
+            Ok(1)
         })
     }
 }

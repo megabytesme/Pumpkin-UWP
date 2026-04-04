@@ -1,7 +1,8 @@
 use std::sync::Arc;
 use std::{any::Any, pin::Pin};
 
-use pumpkin_world::{inventory::split_stack, item::ItemStack};
+use pumpkin_data::item_stack::ItemStack;
+use pumpkin_world::inventory::split_stack;
 use tokio::sync::Mutex;
 
 use pumpkin_world::inventory::{Clearable, Inventory, InventoryFuture};
@@ -16,6 +17,7 @@ pub struct CraftingInventory {
 }
 
 impl CraftingInventory {
+    #[must_use]
     pub fn new(width: u8, height: u8) -> Self {
         Self {
             width,
@@ -38,7 +40,7 @@ impl Inventory for CraftingInventory {
 
     fn is_empty(&self) -> InventoryFuture<'_, bool> {
         Box::pin(async move {
-            for slot in self.items.iter() {
+            for slot in &self.items {
                 if !slot.lock().await.is_empty() {
                     return false;
                 }
@@ -89,7 +91,7 @@ impl RecipeInputInventory for CraftingInventory {
 impl Clearable for CraftingInventory {
     fn clear(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
         Box::pin(async move {
-            for item in self.items.iter() {
+            for item in &self.items {
                 *item.lock().await = ItemStack::EMPTY.clone();
             }
         })

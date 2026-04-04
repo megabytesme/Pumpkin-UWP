@@ -4,6 +4,7 @@ use crate::{
     server::Server,
 };
 use pumpkin_config::networking::compression::CompressionInfo;
+use pumpkin_protocol::bedrock::server::resource_pack_response::SResourcePackResponse;
 use pumpkin_protocol::{
     bedrock::{
         client::{
@@ -21,6 +22,7 @@ use pumpkin_world::CURRENT_BEDROCK_MC_VERSION;
 use serde::Deserialize;
 use std::sync::Arc;
 use thiserror::Error;
+use tracing::{debug, warn};
 use uuid::Uuid;
 
 #[derive(Debug, Error)]
@@ -57,7 +59,7 @@ impl BedrockClient {
         match self.try_handle_login(packet, server).await {
             Ok(()) => Some(()),
             Err(error) => {
-                log::warn!("Bedrock login failed: {error}");
+                warn!("Bedrock login failed: {error}");
                 let message = match error {
                     LoginError::InvalidUsername => "Your username is invalid.".to_string(),
                     _ => "Failed to log in. The data sent by your client was invalid.".to_string(),
@@ -100,30 +102,7 @@ impl BedrockClient {
         self.write_game_packet_to_set(&CPlayStatus::LoginSuccess, &mut frame_set)
             .await;
         self.write_game_packet_to_set(
-            &CResourcePacksInfo::new(
-                false,
-                false,
-                false,
-                false,
-                uuid::Uuid::default(),
-                String::new(),
-                Vec::new(),
-            ),
-            &mut frame_set,
-        )
-        .await;
-        self.write_game_packet_to_set(
-            &CResourcePackStackPacket::new(
-                false,
-                VarUInt(0),
-                VarUInt(0),
-                CURRENT_BEDROCK_MC_VERSION.to_string(),
-                Experiments {
-                    names_size: 0,
-                    experiments_ever_toggled: false,
-                },
-                false,
-            ),
+            &CResourcePacksInfo::new(false, false, false, false, Uuid::default(), String::new()),
             &mut frame_set,
         )
         .await;
@@ -141,5 +120,29 @@ impl BedrockClient {
         }
 
         Ok(())
+    }
+
+    pub async fn handle_resource_pack_response(&self, packet: SResourcePackResponse) {
+        // TODO: Add all
+        if packet.response == SResourcePackResponse::STATUS_HAVE_ALL_PACKS {
+            debug!("Bedrock: STATUS_HAVE_ALL_PACKS");
+            let mut frame_set = FrameSet::default();
+
+            self.write_game_packet_to_set(
+                &CResourcePackStackPacket::new(
+                    false,
+                    VarUInt(0),
+                    CURRENT_BEDROCK_MC_VERSION.to_string(),
+                    Experiments {
+                        names_size: 0,
+                        experiments_ever_toggled: false,
+                    },
+                    false,
+                ),
+                &mut frame_set,
+            )
+            .await;
+            self.send_frame_set(frame_set, 0x84).await;
+        }
     }
 }

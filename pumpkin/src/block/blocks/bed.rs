@@ -5,7 +5,7 @@ use pumpkin_data::block_properties::BedPart;
 use pumpkin_data::block_properties::BlockProperties;
 use pumpkin_data::dimension::Dimension;
 use pumpkin_data::entity::EntityType;
-use pumpkin_data::tag::{RegistryKey, get_tag_values};
+use pumpkin_data::translation;
 use pumpkin_macros::pumpkin_block_from_tag;
 use pumpkin_util::GameMode;
 use pumpkin_util::math::position::BlockPos;
@@ -15,9 +15,13 @@ use pumpkin_world::block::entities::bed::BedBlockEntity;
 use pumpkin_world::world::BlockFlags;
 
 use crate::block::BlockFuture;
+use crate::block::OnLandedUponArgs;
+use crate::block::UpdateEntityMovementAfterFallOnArgs;
+use crate::block::bounce_entity_after_fall;
 use crate::block::registry::BlockActionResult;
 use crate::block::{
-    BlockBehaviour, BrokenArgs, CanPlaceAtArgs, NormalUseArgs, OnPlaceArgs, PlacedArgs,
+    BlockBehaviour, BrokenArgs, CanPlaceAtArgs, NormalUseArgs, OnPlaceArgs, OnStateReplacedArgs,
+    PlacedArgs,
 };
 use crate::entity::{Entity, EntityBase};
 use crate::world::World;
@@ -85,6 +89,23 @@ impl BlockBehaviour for BedBlock {
         })
     }
 
+    fn on_landed_upon<'a>(&'a self, args: OnLandedUponArgs<'a>) -> BlockFuture<'a, ()> {
+        Box::pin(async move {
+            if let Some(living) = args.entity.get_living_entity() {
+                living
+                    .handle_fall_damage(args.entity, args.fall_distance * 0.5, 1.0)
+                    .await;
+            }
+        })
+    }
+
+    fn update_entity_movement_after_fall_on<'a>(
+        &'a self,
+        args: UpdateEntityMovementAfterFallOnArgs<'a>,
+    ) -> BlockFuture<'a, ()> {
+        Box::pin(async move { bounce_entity_after_fall(args.entity, 0.66) })
+    }
+
     fn on_place<'a>(&'a self, args: OnPlaceArgs<'a>) -> BlockFuture<'a, BlockStateId> {
         Box::pin(async move {
             let mut bed_props = BedProperties::default(args.block);
@@ -129,17 +150,63 @@ impl BlockBehaviour for BedBlock {
                 args.position.offset(bed_props.facing.to_offset())
             };
 
+            let neighbor_block_id = args.world.get_block_state_id(&other_half_pos).await;
+            if neighbor_block_id != args.block.id {
+                args.world.update_neighbors(&other_half_pos, None).await;
+                return;
+            }
+
+            let is_creative = args.player.gamemode.load() == GameMode::Creative;
+            let flags = if bed_props.part == BedPart::Foot && !is_creative {
+                // Breaking foot in survival -> allow head to drop
+                BlockFlags::NOTIFY_NEIGHBORS
+            } else {
+                // Breaking head OR creative mode -> skip drops
+                BlockFlags::SKIP_DROPS | BlockFlags::NOTIFY_NEIGHBORS
+            };
+
             args.world
-                .break_block(
-                    &other_half_pos,
-                    Some(args.player.clone()),
-                    if args.player.gamemode.load() == GameMode::Creative {
-                        BlockFlags::SKIP_DROPS | BlockFlags::NOTIFY_NEIGHBORS
-                    } else {
-                        BlockFlags::NOTIFY_NEIGHBORS
-                    },
-                )
+                .break_block(&other_half_pos, Some(args.player.clone()), flags)
                 .await;
+        })
+    }
+
+    fn on_state_replaced<'a>(&'a self, args: OnStateReplacedArgs<'a>) -> BlockFuture<'a, ()> {
+        Box::pin(async move {
+            if args.moved {
+                return;
+            }
+
+            // If the block is being replaced with air (i.e., broken), the `broken` callback
+            // will handle breaking the other half with the correct drop flags. Only handle it here
+            // if the block is being replaced with something else (e.g., piston movement).
+            let new_state_id = args.world.get_block_state_id(args.position).await;
+            let new_block = Block::from_state_id(new_state_id);
+            if new_block == &Block::AIR {
+                return;
+            }
+
+            let bed_props = BedProperties::from_state_id(args.old_state_id, args.block);
+            let other_half_pos = if bed_props.part == BedPart::Head {
+                args.position
+                    .offset(bed_props.facing.opposite().to_offset())
+            } else {
+                args.position.offset(bed_props.facing.to_offset())
+            };
+
+            let (other_block, other_state) = args.world.get_block_and_state(&other_half_pos).await;
+            if other_block == args.block {
+                let other_props = BedProperties::from_state_id(other_state.id, other_block);
+                if other_props.part != bed_props.part {
+                    args.world
+                        .break_block(
+                            &other_half_pos,
+                            None,
+                            BlockFlags::SKIP_DROPS | BlockFlags::NOTIFY_NEIGHBORS,
+                        )
+                        .await;
+                }
+            }
         })
     }
 
@@ -186,13 +253,13 @@ impl BlockBehaviour for BedBlock {
                 .is_solid()
                 || args
                     .world
-                    .get_block_state(&bed_head_pos.up())
+                    .get_block_state(&bed_foot_pos.up())
                     .await
                     .is_solid()
             {
                 args.player
                     .send_system_message_raw(
-                        &TextComponent::translate("block.minecraft.bed.obstructed", []),
+                        &TextComponent::translate(translation::BLOCK_MINECRAFT_BED_OBSTRUCTED, []),
                         true,
                     )
                     .await;
@@ -205,7 +272,7 @@ impl BlockBehaviour for BedBlock {
 
                 args.player
                     .send_system_message_raw(
-                        &TextComponent::translate("block.minecraft.bed.occupied", []),
+                        &TextComponent::translate(translation::BLOCK_MINECRAFT_BED_OCCUPIED, []),
                         true,
                     )
                     .await;
@@ -224,7 +291,10 @@ impl BlockBehaviour for BedBlock {
             {
                 args.player
                     .send_system_message_raw(
-                        &TextComponent::translate("block.minecraft.bed.too_far_away", []),
+                        &TextComponent::translate(
+                            translation::BLOCK_MINECRAFT_BED_TOO_FAR_AWAY,
+                            [],
+                        ),
                         true,
                     )
                     .await;
@@ -238,11 +308,15 @@ impl BlockBehaviour for BedBlock {
                     args.world.dimension,
                     bed_head_pos,
                     args.player.get_entity().yaw.load(),
+                    args.player.get_entity().pitch.load(),
                 )
                 .await
             {
                 args.player
-                    .send_system_message(&TextComponent::translate("block.minecraft.set_spawn", []))
+                    .send_system_message(&TextComponent::translate(
+                        translation::BLOCK_MINECRAFT_SET_SPAWN,
+                        [],
+                    ))
                     .await;
             }
 
@@ -250,7 +324,7 @@ impl BlockBehaviour for BedBlock {
             if !can_sleep(args.world).await {
                 args.player
                     .send_system_message_raw(
-                        &TextComponent::translate("block.minecraft.bed.no_sleep", []),
+                        &TextComponent::translate(translation::BLOCK_MINECRAFT_BED_NO_SLEEP, []),
                         true,
                     )
                     .await;
@@ -258,7 +332,7 @@ impl BlockBehaviour for BedBlock {
             }
 
             // Make sure there are no monsters nearby
-            for entity in args.world.entities.read().await.values() {
+            for entity in args.world.entities.load().iter() {
                 if !entity_prevents_sleep(entity.get_entity()) {
                     continue;
                 }
@@ -269,7 +343,10 @@ impl BlockBehaviour for BedBlock {
                 {
                     args.player
                         .send_system_message_raw(
-                            &TextComponent::translate("block.minecraft.bed.not_safe", []),
+                            &TextComponent::translate(
+                                translation::BLOCK_MINECRAFT_BED_NOT_SAFE,
+                                [],
+                            ),
                             true,
                         )
                         .await;

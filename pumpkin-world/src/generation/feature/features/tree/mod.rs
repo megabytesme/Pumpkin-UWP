@@ -1,29 +1,28 @@
 use decorator::TreeDecorator;
 use foliage::FoliagePlacer;
 use pumpkin_data::tag;
-use pumpkin_data::{Block, BlockState, tag::Taggable};
+use pumpkin_data::{Block, BlockState};
 use pumpkin_util::{math::position::BlockPos, random::RandomGenerator};
-use serde::Deserialize;
+
 use trunk::TrunkPlacer;
 
 use crate::generation::proto_chunk::GenerationCache;
 use crate::generation::{block_state_provider::BlockStateProvider, feature::size::FeatureSize};
+use crate::world::BlockRegistryExt;
 
-mod decorator;
-mod foliage;
-mod trunk;
+pub mod decorator;
+pub mod foliage;
+pub mod trunk;
 
-#[derive(Deserialize)]
 pub struct TreeFeature {
-    dirt_provider: BlockStateProvider,
-    trunk_provider: BlockStateProvider,
-    trunk_placer: TrunkPlacer,
-    foliage_provider: BlockStateProvider,
-    foliage_placer: FoliagePlacer,
-    minimum_size: FeatureSize,
-    ignore_vines: bool,
-    force_dirt: bool,
-    decorators: Vec<TreeDecorator>,
+    pub trunk_provider: BlockStateProvider,
+    pub trunk_placer: TrunkPlacer,
+    pub foliage_provider: BlockStateProvider,
+    pub foliage_placer: FoliagePlacer,
+    pub minimum_size: FeatureSize,
+    pub ignore_vines: bool,
+    pub decorators: Vec<TreeDecorator>,
+    pub below_trunk_provider: BlockStateProvider,
 }
 
 pub struct TreeNode {
@@ -33,8 +32,10 @@ pub struct TreeNode {
 }
 
 impl TreeFeature {
+    #[expect(clippy::too_many_arguments)]
     pub fn generate<T: GenerationCache>(
         &self,
+        block_registry: &dyn BlockRegistryExt,
         chunk: &mut T,
         min_y: i8,
         height: u16,
@@ -43,7 +44,15 @@ impl TreeFeature {
         pos: BlockPos,
     ) -> bool {
         // TODO
-        let log_positions = self.generate_main(chunk, min_y, height, feature_name, random, pos);
+        let log_positions = self.generate_main(
+            block_registry,
+            chunk,
+            min_y,
+            height,
+            feature_name,
+            random,
+            pos,
+        );
 
         for decorator in &self.decorators {
             decorator.generate(chunk, random, &[], &log_positions);
@@ -51,20 +60,25 @@ impl TreeFeature {
         true
     }
 
-    pub fn can_replace_or_log(state: &BlockState, block: &Block) -> bool {
-        Self::can_replace(state, block) || block.has_tag(&tag::Block::MINECRAFT_LOGS)
+    pub fn can_replace_or_log(state: &BlockState, block: u16) -> bool {
+        Self::can_replace(state, block) || tag::Block::MINECRAFT_LOGS.1.contains(&block)
     }
 
-    pub fn is_air_or_leaves(state: &BlockState, block: &Block) -> bool {
-        state.is_air() || block.has_tag(&tag::Block::MINECRAFT_LEAVES)
+    pub fn is_air_or_leaves(state: &BlockState, block: u16) -> bool {
+        state.is_air() || tag::Block::MINECRAFT_LEAVES.1.contains(&block)
     }
 
-    pub fn can_replace(state: &BlockState, block: &Block) -> bool {
-        state.is_air() || block.has_tag(&tag::Block::MINECRAFT_REPLACEABLE_BY_TREES)
+    pub fn can_replace(state: &BlockState, block: u16) -> bool {
+        state.is_air()
+            || tag::Block::MINECRAFT_REPLACEABLE_BY_TREES
+                .1
+                .contains(&block)
     }
 
+    #[expect(clippy::too_many_arguments)]
     fn generate_main<T: GenerationCache>(
         &self,
+        block_registry: &dyn BlockRegistryExt,
         chunk: &mut T,
         _min_y: i8,
         _height: u16,
@@ -80,15 +94,14 @@ impl TreeFeature {
             return vec![];
         }
         let trunk_state = self.trunk_provider.get(random, pos);
-        let dirt_state = self.dirt_provider.get(random, pos);
 
         let (nodes, logs) = self.trunk_placer.generate(
+            block_registry,
             top,
             pos,
             chunk,
             random,
-            self.force_dirt,
-            dirt_state,
+            &self.below_trunk_provider,
             trunk_state,
         );
 
@@ -119,9 +132,9 @@ impl TreeFeature {
                 for z in -j..=j {
                     let pos = BlockPos(init_pos.0.add_raw(x, y as i32, z));
                     let rstate = GenerationCache::get_block_state(chunk, &pos.0);
-                    let block = rstate.to_block();
+                    let block = rstate.to_block_id();
                     if Self::can_replace_or_log(rstate.to_state(), block)
-                        && (self.ignore_vines || block != &Block::VINE)
+                        && (self.ignore_vines || block != Block::VINE)
                     {
                         continue;
                     }

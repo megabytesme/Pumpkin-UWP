@@ -1,15 +1,14 @@
-use pumpkin_data::{Block, BlockState, tag::Taggable};
-use serde::Deserialize;
+use pumpkin_data::tag::{self};
 
-#[derive(Deserialize)]
+use crate::block::RawBlockState;
+
 pub struct TagMatchRuleTest {
-    tag: String,
+    pub tag: tag::Tag,
 }
 
 impl TagMatchRuleTest {
-    pub fn test(&self, state: &BlockState) -> bool {
-        Block::from_state_id(state.id)
-            .is_tagged_with(&self.tag)
-            .unwrap()
+    #[must_use]
+    pub fn test(&self, state: RawBlockState) -> bool {
+        self.tag.1.contains(&state.to_block_id())
     }
 }

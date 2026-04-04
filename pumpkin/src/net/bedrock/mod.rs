@@ -8,6 +8,8 @@ use std::{
     },
 };
 
+use tracing::{debug, error, warn};
+
 use bytes::Bytes;
 use pumpkin_config::networking::compression::CompressionInfo;
 use pumpkin_protocol::{
@@ -47,11 +49,11 @@ use pumpkin_protocol::{
 use std::net::SocketAddr;
 use tokio::{
     net::UdpSocket,
+    sync::Mutex,
     sync::mpsc::{Receiver, Sender},
-    sync::{Mutex, Notify},
     task::JoinHandle,
 };
-use tokio_util::task::TaskTracker;
+use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 pub mod connection;
 pub mod login;
@@ -84,13 +86,8 @@ pub struct BedrockClient {
     output_split_number: AtomicU16,
     output_sequenced_index: AtomicU32,
     output_ordered_index: AtomicU32,
-
     /// An notifier that is triggered when this client is closed.
-    close_interrupt: Arc<Notify>,
-
-    /// Indicates if the client connection is closed.
-    pub closed: Arc<AtomicBool>,
-
+    close_token: CancellationToken,
     /// Store Fragments until the packet is complete
     compounds: Arc<Mutex<HashMap<u16, Vec<Option<Frame>>>>>,
     //input_sequence_number: AtomicU32,
@@ -121,23 +118,21 @@ impl BedrockClient {
             output_sequenced_index: AtomicU32::new(0),
             output_ordered_index: AtomicU32::new(0),
             compounds: Arc::new(Mutex::new(HashMap::new())),
-            closed: Arc::new(AtomicBool::new(false)),
-            close_interrupt: Arc::new(Notify::new()),
+            close_token: CancellationToken::new(),
             //input_sequence_number: AtomicU32::new(0),
         }
     }
 
     pub fn start_outgoing_packet_task(&mut self) {
         let mut packet_receiver = self.outgoing_packet_queue_recv.take().unwrap();
-        let close_interrupt = self.close_interrupt.clone();
-        let closed = self.closed.clone();
+        let close_token = self.close_token.clone();
         let writer = self.network_writer.clone();
         let addr = self.address;
         let socket = self.socket.clone();
         self.spawn_task(async move {
-            while !closed.load(Ordering::Relaxed) {
+            while !close_token.is_cancelled() {
                 let recv_result = tokio::select! {
-                    () = close_interrupt.notified() => {
+                    () = close_token.cancelled() => {
                         None
                     },
                     recv_result = packet_receiver.recv() => {
@@ -156,12 +151,11 @@ impl BedrockClient {
                     .await
                 {
                     // It is expected that the packet will fail if we are closed
-                    if !closed.load(Ordering::Relaxed) {
-                        log::warn!("Failed to send packet to client: {err}",);
+                    if !close_token.is_cancelled() {
+                        warn!("Failed to send packet to client: {err}",);
                         // We now need to close the connection to the client since the stream is in an
                         // unknown state
-                        close_interrupt.notify_waiters();
-                        closed.store(true, Ordering::Relaxed);
+                        close_token.cancel();
                         break;
                     }
                 }
@@ -175,7 +169,7 @@ impl BedrockClient {
             && let Err(error) = self.handle_packet_payload(server, packet).await
         {
             let _text = format!("Error while reading incoming packet {error}");
-            log::error!("Failed to read incoming packet with : {error}");
+            error!("Failed to read incoming packet with : {error}");
             self.kick(DisconnectReason::BadPacket, error.to_string())
                 .await;
         }
@@ -208,8 +202,8 @@ impl BedrockClient {
     pub async fn enqueue_packet_data(&self, packet_data: Bytes) {
         if let Err(err) = self.outgoing_packet_queue_send.send(packet_data).await {
             // This is expected to fail if we are closed
-            if !self.closed.load(Ordering::Relaxed) {
-                log::error!("Failed to add packet to the outgoing packet queue for client: {err}");
+            if !self.is_closed() {
+                error!("Failed to add packet to the outgoing packet queue for client: {err}");
             }
         }
     }
@@ -231,17 +225,13 @@ impl BedrockClient {
         packet.write_packet(&mut packet_payload)?;
 
         // TODO
-        self.network_writer
-            .lock()
-            .await
-            .write_game_packet(
-                P::PACKET_ID as u16,
-                SubClient::Main,
-                SubClient::Main,
-                packet_payload.into(),
-                write,
-            )
-            .await
+        self.network_writer.lock().await.write_game_packet(
+            P::PACKET_ID as u16,
+            SubClient::Main,
+            SubClient::Main,
+            &packet_payload,
+            write,
+        )
     }
 
     pub async fn send_offline_packet<P: BClientPacket>(
@@ -362,18 +352,17 @@ impl BedrockClient {
             .await
         {
             // It is expected that the packet will fail if we are closed
-            if !self.closed.load(Ordering::Relaxed) {
-                log::warn!("Failed to send packet to client: {err}");
+            if !self.is_closed() {
+                warn!("Failed to send packet to client: {err}");
                 // We now need to close the connection to the client since the stream is in an
                 // unknown state
-                self.closed.store(true, Ordering::Relaxed);
+                self.close_token.cancel();
             }
         }
     }
 
     pub async fn close(&self) {
-        self.close_interrupt.notify_waiters();
-        self.closed.store(true, Ordering::Relaxed);
+        self.close_token.cancel();
         self.tasks.close();
         self.tasks.wait().await;
         self.be_clients.lock().await.remove(&self.address);
@@ -381,6 +370,10 @@ impl BedrockClient {
         if let Some(player) = self.player.lock().await.as_ref() {
             player.remove().await;
         }
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.close_token.is_cancelled()
     }
 
     pub async fn send_ack(&self, ack: &Ack) {
@@ -394,7 +387,7 @@ impl BedrockClient {
             .write_packet(&packet_buf, self.address, &self.socket)
             .await
         {
-            log::warn!("Failed to send packet to client: {err}");
+            warn!("Failed to send packet to client: {err}");
             self.close().await;
         }
     }
@@ -411,19 +404,19 @@ impl BedrockClient {
                 Self::handle_ack(&Ack::read(reader)?);
             }
             RAKNET_NACK => {
-                dbg!("received nack, client is missing packets");
+                debug!("received nack, client is missing packets");
             }
             0x80..0x8d => {
                 self.handle_frame_set(server, FrameSet::read(reader)?).await;
             }
             id => {
-                log::warn!("Bedrock: Received unknown packet header {id}");
+                warn!("Bedrock: Received unknown packet header {id}");
             }
         }
         Ok(())
     }
 
-    fn handle_ack(_ack: &Ack) {}
+    const fn handle_ack(_ack: &Ack) {}
 
     async fn handle_frame_set(self: &Arc<Self>, server: &Arc<Server>, frame_set: FrameSet) {
         // TODO: Send all ACKs in short intervals in batches
@@ -497,8 +490,12 @@ impl BedrockClient {
             SLogin::PACKET_ID => {
                 self.handle_login(SLogin::read(payload)?, server).await;
             }
-            SClientCacheStatus::PACKET_ID | SResourcePackResponse::PACKET_ID => {
+            SClientCacheStatus::PACKET_ID => {
                 // TODO
+            }
+            SResourcePackResponse::PACKET_ID => {
+                self.handle_resource_pack_response(SResourcePackResponse::read(payload)?)
+                    .await;
             }
             _ => {
                 self.handle_play_packet(self.player.lock().await.as_ref().unwrap(), server, packet)
@@ -550,7 +547,7 @@ impl BedrockClient {
                     .await;
             }
             _ => {
-                log::warn!("Bedrock: Received Unknown Game packet: {}", packet.id);
+                warn!("Bedrock: Received Unknown Game packet: {}", packet.id);
             }
         }
     }
@@ -582,13 +579,12 @@ impl BedrockClient {
                     .lock()
                     .await
                     .get_game_packet(payload)
-                    .await
                     .map_err(|e| Error::other(e.to_string()))?;
 
                 self.handle_game_packet(server, game_packet).await?;
             }
             _ => {
-                log::warn!("Bedrock: Received Unknown RakNet Online packet: {packet_id}");
+                warn!("Bedrock: Received Unknown RakNet Online packet: {packet_id}");
             }
         }
         Ok(())
@@ -629,20 +625,20 @@ impl BedrockClient {
                 )
                 .await;
             }
-            _ => log::error!("Bedrock: Received Unknown RakNet Offline packet: {packet_id}"),
+            _ => error!("Bedrock: Received Unknown RakNet Offline packet: {packet_id}"),
         }
         Ok(())
     }
 
     pub async fn await_close_interrupt(&self) {
-        self.close_interrupt.notified().await;
+        self.close_token.cancelled().await;
     }
 
     pub async fn get_packet_payload(&self, packet: Cursor<Vec<u8>>) -> Option<Bytes> {
         let mut network_reader = self.network_reader.lock().await;
         tokio::select! {
             () = self.await_close_interrupt() => {
-                log::debug!("Canceling player packet processing");
+                debug!("Canceling player packet processing");
                 None
             },
             packet_result = network_reader.get_packet_payload(packet) => {
@@ -650,7 +646,7 @@ impl BedrockClient {
                     Ok(packet) => Some(packet),
                     Err(err) => {
                         if !matches!(err, PacketDecodeError::ConnectionClosed) {
-                            log::warn!("Failed to decode packet from client: {err}");
+                            warn!("Failed to decode packet from client: {err}");
                             let text = format!("Error while reading incoming packet {err}");
                             self.kick(DisconnectReason::BadPacket, text).await;
                         }
@@ -666,7 +662,7 @@ impl BedrockClient {
         F: Future + Send + 'static,
         F::Output: Send + 'static,
     {
-        if self.closed.load(Ordering::Relaxed) {
+        if self.close_token.is_cancelled() {
             None
         } else {
             Some(self.tasks.spawn(task))

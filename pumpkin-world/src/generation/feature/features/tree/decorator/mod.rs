@@ -9,42 +9,30 @@ use leave_vine::LeavesVineTreeDecorator;
 use pale_moss::PaleMossTreeDecorator;
 use place_on_ground::PlaceOnGroundTreeDecorator;
 use pumpkin_util::{math::position::BlockPos, random::RandomGenerator};
-use serde::Deserialize;
+
 use trunk_vine::TrunkVineTreeDecorator;
 
-mod alter_ground;
-mod attached_to_leaves;
-mod attached_to_logs;
-mod beehive;
-mod cocoa;
-mod creaking_heart;
-mod leave_vine;
-mod pale_moss;
-mod place_on_ground;
-mod trunk_vine;
+pub mod alter_ground;
+pub mod attached_to_leaves;
+pub mod attached_to_logs;
+pub mod beehive;
+pub mod cocoa;
+pub mod creaking_heart;
+pub mod leave_vine;
+pub mod pale_moss;
+pub mod place_on_ground;
+pub mod trunk_vine;
 
-#[derive(Deserialize)]
-#[serde(tag = "type")]
 pub enum TreeDecorator {
-    #[serde(rename = "minecraft:trunk_vine")]
     TrunkVine(TrunkVineTreeDecorator),
-    #[serde(rename = "minecraft:leave_vine")]
     LeaveVine(LeavesVineTreeDecorator),
-    #[serde(rename = "minecraft:pale_moss")]
     PaleMoss(PaleMossTreeDecorator),
-    #[serde(rename = "minecraft:creaking_heart")]
     CreakingHeart(CreakingHeartTreeDecorator),
-    #[serde(rename = "minecraft:cocoa")]
     Cocoa(CocoaTreeDecorator),
-    #[serde(rename = "minecraft:beehive")]
     Beehive(BeehiveTreeDecorator),
-    #[serde(rename = "minecraft:alter_ground")]
     AlterGround(AlterGroundTreeDecorator),
-    #[serde(rename = "minecraft:attached_to_leaves")]
     AttachedToLeaves(AttachedToLeavesTreeDecorator),
-    #[serde(rename = "minecraft:place_on_ground")]
     PlaceOnGround(PlaceOnGroundTreeDecorator),
-    #[serde(rename = "minecraft:attached_to_logs")]
     AttachedToLogs(AttachedToLogsTreeDecorator),
 }
 
@@ -57,19 +45,19 @@ impl TreeDecorator {
         log_positions: &[BlockPos],
     ) {
         match self {
-            TreeDecorator::TrunkVine(decorator) => decorator.generate(chunk, random, log_positions),
-            TreeDecorator::LeaveVine(_decorator) => {}
-            TreeDecorator::PaleMoss(_decorator) => {}
-            TreeDecorator::CreakingHeart(_decorator) => {}
-            TreeDecorator::Cocoa(_decorator) => {}
-            TreeDecorator::Beehive(_decorator) => {}
-            TreeDecorator::AlterGround(_decorator) => {}
-            TreeDecorator::PlaceOnGround(decorator) => {
-                decorator.generate(chunk, random, root_positions, log_positions)
+            Self::TrunkVine(decorator) => decorator.generate(chunk, random, log_positions),
+            Self::LeaveVine(_decorator) => {}
+            Self::PaleMoss(_decorator) => {}
+            Self::CreakingHeart(_decorator) => {}
+            Self::Cocoa(_decorator) => {}
+            Self::Beehive(_decorator) => {}
+            Self::AlterGround(_decorator) => {}
+            Self::PlaceOnGround(decorator) => {
+                decorator.generate(chunk, random, root_positions, log_positions);
             }
-            TreeDecorator::AttachedToLeaves(_decorator) => {}
-            TreeDecorator::AttachedToLogs(decorator) => {
-                decorator.generate(chunk, random, log_positions)
+            Self::AttachedToLeaves(_decorator) => {}
+            Self::AttachedToLogs(decorator) => {
+                decorator.generate(chunk, random, log_positions);
             }
         }
     }
@@ -78,18 +66,18 @@ impl TreeDecorator {
         root_positions: &[BlockPos],
         log_positions: &[BlockPos],
     ) -> Vec<BlockPos> {
-        let mut list = Vec::new();
         if root_positions.is_empty() {
-            list.extend_from_slice(log_positions);
-        } else if !log_positions.is_empty()
-            && root_positions.first().unwrap().0.y == log_positions.first().unwrap().0.y
-        {
-            list.extend_from_slice(log_positions);
-            list.extend_from_slice(root_positions);
-        } else {
-            list.extend_from_slice(root_positions);
+            return log_positions.to_vec();
         }
 
-        list
+        if let (Some(root), Some(log)) = (root_positions.first(), log_positions.first())
+            && root.0.y == log.0.y
+        {
+            let mut list = Vec::with_capacity(root_positions.len() + log_positions.len());
+            list.extend_from_slice(log_positions);
+            list.extend_from_slice(root_positions);
+            return list;
+        }
+        root_positions.to_vec()
     }
 }

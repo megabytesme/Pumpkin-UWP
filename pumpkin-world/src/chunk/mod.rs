@@ -2,20 +2,24 @@ use crate::BlockStateId;
 use crate::block::entities::BlockEntity;
 use crate::chunk::format::LightContainer;
 use crate::tick::scheduler::ChunkTickScheduler;
-use palette::{BiomePalette, BlockPalette};
-use pumpkin_data::block_properties::blocks_movement;
+use palette::{BiomePalette, BlockPalette, has_random_ticking_fluid};
+use pumpkin_data::block_properties::{blocks_movement, has_random_ticks, is_air};
 use pumpkin_data::chunk::ChunkStatus;
 use pumpkin_data::fluid::Fluid;
 use pumpkin_data::tag::Block::MINECRAFT_LEAVES;
-use pumpkin_data::tag::Taggable;
 use pumpkin_data::{Block, BlockState};
 use pumpkin_nbt::compound::NbtCompound;
 use pumpkin_nbt::nbt_long_array;
 use pumpkin_util::math::position::BlockPos;
+use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
-use std::ops::BitAnd;
-use std::{collections::HashMap, sync::Arc};
+use std::fmt::Write;
+use std::ops::{BitAnd, BitOr};
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, RwLock};
 use thiserror::Error;
+use tokio::sync::Mutex;
+use tracing::info;
 
 pub mod format;
 pub mod io;
@@ -71,26 +75,26 @@ pub enum CompressionError {
 pub struct ChunkData {
     pub section: ChunkSections,
     /// See `https://minecraft.wiki/w/Heightmap` for more info
-    pub heightmap: ChunkHeightmaps,
+    pub heightmap: std::sync::Mutex<ChunkHeightmaps>,
     pub x: i32,
     pub z: i32,
     pub block_ticks: ChunkTickScheduler<&'static Block>,
     pub fluid_ticks: ChunkTickScheduler<&'static Fluid>,
-    pub block_entities: HashMap<BlockPos, Arc<dyn BlockEntity>>,
-    pub light_engine: ChunkLight,
+    pub block_entities: std::sync::Mutex<FxHashMap<BlockPos, Arc<dyn BlockEntity>>>,
+    pub light_engine: std::sync::Mutex<ChunkLight>,
+    pub light_populated: AtomicBool,
     pub status: ChunkStatus,
-    pub dirty: bool,
+    pub dirty: AtomicBool,
 }
 
-#[derive(Clone)]
 pub struct ChunkEntityData {
     /// Chunk X
     pub x: i32,
     /// Chunk Z
     pub z: i32,
-    pub data: HashMap<uuid::Uuid, NbtCompound>,
+    pub data: Mutex<FxHashMap<uuid::Uuid, NbtCompound>>,
 
-    pub dirty: bool,
+    pub dirty: AtomicBool,
 }
 
 /// Represents pure block data for a chunk.
@@ -99,42 +103,49 @@ pub struct ChunkEntityData {
 ///
 /// A chunk can be:
 /// - Subchunks: 24 separate subchunks are stored.
-#[derive(Clone)]
 pub struct ChunkSections {
-    pub sections: Box<[SubChunk]>,
+    pub count: usize,
+    pub block_sections: RwLock<Box<[BlockPalette]>>,
+    pub random_tick_sections: RwLock<Box<[RandomTickSectionCache]>>,
+    pub biome_sections: RwLock<Box<[BiomePalette]>>,
     pub min_y: i32,
+}
+
+#[derive(Default, Clone, Copy)]
+pub struct RandomTickSectionCache {
+    pub random_ticking_block_count: u16,
+    pub random_ticking_fluid_count: u16,
+}
+
+impl RandomTickSectionCache {
+    #[must_use]
+    pub const fn is_randomly_ticking(&self) -> bool {
+        self.random_ticking_block_count > 0 || self.random_ticking_fluid_count > 0
+    }
 }
 
 impl ChunkSections {
     #[cfg(test)]
+    #[must_use]
     pub fn dump_blocks(&self) -> Vec<u16> {
-        // TODO: this is not optimal, we could use rust iters
-        let mut dump = Vec::new();
-        for section in self.sections.iter() {
-            section.block_states.for_each(|raw_id| {
-                dump.push(raw_id);
-            });
-        }
-        dump
+        self.block_sections
+            .read()
+            .unwrap()
+            .iter()
+            .flat_map(|section| section.iter().copied())
+            .collect()
     }
 
     #[cfg(test)]
+    #[must_use]
     pub fn dump_biomes(&self) -> Vec<u8> {
-        // TODO: this is not optimal, we could use rust iters
-        let mut dump = Vec::new();
-        for section in self.sections.iter() {
-            section.biomes.for_each(|raw_id| {
-                dump.push(raw_id);
-            });
-        }
-        dump
+        self.biome_sections
+            .read()
+            .unwrap()
+            .iter()
+            .flat_map(|section| section.iter().copied())
+            .collect()
     }
-}
-
-#[derive(Default, Clone)]
-pub struct SubChunk {
-    pub block_states: BlockPalette,
-    pub biomes: BiomePalette,
 }
 
 #[derive(Default, Clone)]
@@ -154,9 +165,9 @@ impl TryFrom<usize> for ChunkHeightmapType {
 
     fn try_from(value: usize) -> Result<Self, Self::Error> {
         match value {
-            0 => Ok(ChunkHeightmapType::WorldSurface),
-            1 => Ok(ChunkHeightmapType::MotionBlocking),
-            2 => Ok(ChunkHeightmapType::MotionBlockingNoLeaves),
+            0 => Ok(Self::WorldSurface),
+            1 => Ok(Self::MotionBlocking),
+            2 => Ok(Self::MotionBlockingNoLeaves),
             _ => Err("Invalid usize value for ChunkHeightmapType. The value should be 0~2."),
         }
     }
@@ -174,8 +185,8 @@ pub struct ChunkHeightmaps {
 }
 
 impl ChunkHeightmaps {
-    pub fn set(&mut self, _type: ChunkHeightmapType, pos: BlockPos, min_y: i32) {
-        let data = match _type {
+    pub fn set(&mut self, heightmap: ChunkHeightmapType, pos: BlockPos, min_y: i32) {
+        let data = match heightmap {
             ChunkHeightmapType::WorldSurface => &mut self.world_surface,
             ChunkHeightmapType::MotionBlocking => &mut self.motion_blocking,
             ChunkHeightmapType::MotionBlockingNoLeaves => &mut self.motion_blocking_no_leaves,
@@ -199,28 +210,27 @@ impl ChunkHeightmaps {
         // but this avoids the hassle of bit concatenation.
         let packed_array_bit_start_idx = bit_start_idx as u32 % 63;
 
-        let mask: i64 = if packed_array_bit_start_idx == 0 {
-            !((0x1FFu64) << (64 - 9)) as i64
-        } else {
-            !((0x1FFu64) << (64 - packed_array_bit_start_idx - 9)) as i64
+        let mask = {
+            if packed_array_bit_start_idx == 0 {
+                //0b0000_0000_0111_1111_...
+                !(0x1FF << (64 - 9))
+            } else {
+                !(0x1FF << (64 - packed_array_bit_start_idx - 9))
+            }
         };
 
-        let shifted: u64 = (adjust_height as u64).wrapping_shl(64 - 9 - packed_array_bit_start_idx);
-
-        let height: i64 = shifted as i64;
+        let height_bit_bytes = adjust_height
+            .wrapping_shl(64 - 9 - packed_array_bit_start_idx)
+            .to_ne_bytes();
+        let height = i64::from_ne_bytes(height_bit_bytes);
 
         let packed_array_idx = column_idx / 7;
 
-        data[packed_array_idx] = (data[packed_array_idx] & mask) | height;
+        data[packed_array_idx] = data[packed_array_idx].bitand(mask).bitor(height);
     }
 
-    pub fn get_height(&self, _type: ChunkHeightmapType, x: i32, z: i32, min_y: i32) -> i32 {
-        let data = match _type {
-            ChunkHeightmapType::WorldSurface => &self.world_surface,
-            ChunkHeightmapType::MotionBlocking => &self.motion_blocking,
-            ChunkHeightmapType::MotionBlockingNoLeaves => &self.motion_blocking_no_leaves,
-        };
-
+    #[must_use]
+    pub fn get(&self, heightmap: ChunkHeightmapType, x: i32, z: i32, min_y: i32) -> i32 {
         let local_x = (x & 15) as usize;
         let local_z = (z & 15) as usize;
 
@@ -240,6 +250,11 @@ impl ChunkHeightmaps {
 
         let packed_array_idx = column_idx / 7;
 
+        let data = match heightmap {
+            ChunkHeightmapType::WorldSurface => &self.world_surface,
+            ChunkHeightmapType::MotionBlocking => &self.motion_blocking,
+            ChunkHeightmapType::MotionBlockingNoLeaves => &self.motion_blocking_no_leaves,
+        };
         let height_bit_bytes_i64 = data[packed_array_idx].bitand(mask).to_ne_bytes();
 
         (u64::from_ne_bytes(height_bit_bytes_i64)
@@ -250,7 +265,7 @@ impl ChunkHeightmaps {
     pub fn log_heightmap(&self, _type: ChunkHeightmapType, min_y: i32) {
         let mut header = "Z/X".to_string();
         for x in 0..16 {
-            header.push_str(&format!("{x:4}"));
+            let _ = write!(header, "{x:4}");
         }
 
         let grid: String = (0..16)
@@ -258,7 +273,7 @@ impl ChunkHeightmaps {
                 let mut row = format!("{z:3}");
                 row.push_str(
                     &(0..16)
-                        .map(|x| format!("{:4}", self.get_height(_type, x, z, min_y)))
+                        .map(|x| format!("{:4}", self.get(_type, x, z, min_y)))
                         .collect::<String>(),
                 );
                 row
@@ -266,7 +281,7 @@ impl ChunkHeightmaps {
             .collect::<Vec<_>>()
             .join("\n");
 
-        log::info!("\nHeightMap:\n{header}\n{grid}");
+        info!("\nHeightMap:\n{header}\n{grid}");
     }
 }
 
@@ -284,10 +299,40 @@ impl Default for ChunkHeightmaps {
 }
 
 impl ChunkSections {
-    pub fn new(sections: Box<[SubChunk]>, min_y: i32) -> Self {
-        Self { sections, min_y }
+    #[must_use]
+    pub fn build_random_tick_sections_cache(
+        block_sections: &[BlockPalette],
+    ) -> Box<[RandomTickSectionCache]> {
+        block_sections
+            .iter()
+            .map(|section| {
+                let (random_ticking_block_count, random_ticking_fluid_count) =
+                    section.random_ticking_counts();
+                RandomTickSectionCache {
+                    random_ticking_block_count,
+                    random_ticking_fluid_count,
+                }
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice()
     }
 
+    #[must_use]
+    pub fn new(num_sections: usize, min_y: i32) -> Self {
+        let block_sections = vec![BlockPalette::default(); num_sections].into_boxed_slice();
+        let random_tick_sections = Self::build_random_tick_sections_cache(&block_sections);
+        let biome_sections = vec![BiomePalette::default(); num_sections].into_boxed_slice();
+
+        Self {
+            count: num_sections,
+            block_sections: RwLock::new(block_sections),
+            random_tick_sections: RwLock::new(random_tick_sections),
+            biome_sections: RwLock::new(biome_sections),
+            min_y,
+        }
+    }
+
+    #[must_use]
     pub fn get_block_absolute_y(
         &self,
         relative_x: usize,
@@ -303,6 +348,7 @@ impl ChunkSections {
         }
     }
 
+    #[must_use]
     pub fn get_rough_biome_absolute_y(
         &self,
         relative_x: usize,
@@ -325,7 +371,7 @@ impl ChunkSections {
 
     /// Returns the replaced block state ID
     pub fn set_block_absolute_y(
-        &mut self,
+        &self,
         relative_x: usize,
         y: i32,
         relative_z: usize,
@@ -352,15 +398,17 @@ impl ChunkSections {
 
         let section_index = relative_y / BlockPalette::SIZE;
         let relative_y = relative_y % BlockPalette::SIZE;
-        self.sections
+        self.block_sections
+            .read()
+            .unwrap()
             .get(section_index)
-            .map(|section| section.block_states.get(relative_x, relative_y, relative_z))
+            .map(|section| section.get(relative_x, relative_y, relative_z))
     }
 
     /// Sets the given block in the chunk, returning the old block state ID
     #[inline]
     pub fn set_relative_block(
-        &mut self,
+        &self,
         relative_x: usize,
         relative_y: usize,
         relative_z: usize,
@@ -376,7 +424,7 @@ impl ChunkSections {
     /// Only use this if you know you don't need to update the heightmap
     /// or if you manually set the heightmap in `empty_with_heightmap`
     pub fn set_block_no_heightmap_update(
-        &mut self,
+        &self,
         relative_x: usize,
         relative_y: usize,
         relative_z: usize,
@@ -387,10 +435,44 @@ impl ChunkSections {
 
         let section_index = relative_y / BlockPalette::SIZE;
         let relative_y = relative_y % BlockPalette::SIZE;
-        if let Some(section) = self.sections.get_mut(section_index) {
-            return section
-                .block_states
-                .set(relative_x, relative_y, relative_z, block_state_id);
+
+        // Keep lock order consistent to avoid deadlocks: block sections first, then random-tick cache.
+        let mut sections = self.block_sections.write().unwrap();
+        let mut random_tick_sections = self.random_tick_sections.write().unwrap();
+
+        if let (Some(section), Some(random_tick_cache)) = (
+            sections.get_mut(section_index),
+            random_tick_sections.get_mut(section_index),
+        ) {
+            let replaced_block_state_id =
+                section.set(relative_x, relative_y, relative_z, block_state_id);
+            if replaced_block_state_id == block_state_id {
+                return replaced_block_state_id;
+            }
+
+            if has_random_ticks(replaced_block_state_id) {
+                random_tick_cache.random_ticking_block_count = random_tick_cache
+                    .random_ticking_block_count
+                    .saturating_sub(1);
+            }
+            if has_random_ticking_fluid(replaced_block_state_id) {
+                random_tick_cache.random_ticking_fluid_count = random_tick_cache
+                    .random_ticking_fluid_count
+                    .saturating_sub(1);
+            }
+
+            if has_random_ticks(block_state_id) {
+                random_tick_cache.random_ticking_block_count = random_tick_cache
+                    .random_ticking_block_count
+                    .saturating_add(1);
+            }
+            if has_random_ticking_fluid(block_state_id) {
+                random_tick_cache.random_ticking_fluid_count = random_tick_cache
+                    .random_ticking_fluid_count
+                    .saturating_add(1);
+            }
+
+            return replaced_block_state_id;
         }
         0
     }
@@ -407,13 +489,12 @@ impl ChunkSections {
 
         let section_index = relative_y / BiomePalette::SIZE;
         let relative_y = relative_y % BiomePalette::SIZE;
-        if let Some(section) = self.sections.get_mut(section_index) {
-            section
-                .biomes
-                .set(relative_x, relative_y, relative_z, biome_id);
+        if let Some(section) = self.biome_sections.write().unwrap().get_mut(section_index) {
+            section.set(relative_x, relative_y, relative_z, biome_id);
         }
     }
 
+    #[must_use]
     pub fn get_noise_biome(
         &self,
         index: usize,
@@ -423,11 +504,14 @@ impl ChunkSections {
     ) -> Option<u8> {
         debug_assert!(scale_x < BiomePalette::SIZE);
         debug_assert!(scale_z < BiomePalette::SIZE);
-        self.sections
+        self.biome_sections
+            .read()
+            .unwrap()
             .get(index)
-            .map(|section| section.biomes.get(scale_x, scale_y, scale_z))
+            .map(|section| section.get(scale_x, scale_y, scale_z))
     }
 
+    #[must_use]
     pub fn get_top_y(&self, relative_x: usize, relative_z: usize, first_y: i32) -> Option<i32> {
         debug_assert!(relative_x < BlockPalette::SIZE);
         debug_assert!(relative_z < BlockPalette::SIZE);
@@ -435,7 +519,7 @@ impl ChunkSections {
         let mut y = first_y;
         while y >= self.min_y {
             if let Some(block_state_id) = self.get_block_absolute_y(relative_x, y, relative_z)
-                && !BlockState::from_id(block_state_id).is_air()
+                && !is_air(block_state_id)
             {
                 return Some(y);
             }
@@ -448,6 +532,7 @@ impl ChunkSections {
 impl ChunkData {
     /// Gets the given block in the chunk
     #[inline]
+    #[must_use]
     pub fn get_relative_block(
         &self,
         relative_x: usize,
@@ -490,7 +575,7 @@ impl ChunkData {
     }
 
     //TODO: Tracking heightmaps update.
-    pub fn calculate_heightmap(&mut self) -> ChunkHeightmaps {
+    pub fn calculate_heightmap(&self) -> ChunkHeightmaps {
         let highest_non_empty_subchunk = self.get_highest_non_empty_subchunk();
         let mut heightmaps = ChunkHeightmaps::default();
 
@@ -523,7 +608,7 @@ impl ChunkData {
             let pos = BlockPos::new(x as i32, y, z as i32);
             let state_id = self.section.get_block_absolute_y(x, y, z).unwrap();
             let block_state = BlockState::from_id(state_id);
-            let block = Block::from_state_id(state_id);
+            let block = Block::get_raw_id_from_state_id(state_id);
 
             if !block_state.is_air() && !has_found[ChunkHeightmapType::WorldSurface as usize] {
                 heightmaps.set(ChunkHeightmapType::WorldSurface, pos, self.section.min_y);
@@ -531,8 +616,7 @@ impl ChunkData {
             }
 
             let is_motion_blocking = blocks_movement(block_state, block)
-                || Fluid::from_registry_key(block.registry_key())
-                    .is_some_and(|fluid| !fluid.states.is_empty());
+                || Fluid::from_id(block).is_some_and(|fluid| !fluid.states.is_empty());
 
             if !has_found[ChunkHeightmapType::MotionBlocking as usize] && is_motion_blocking {
                 heightmaps.set(ChunkHeightmapType::MotionBlocking, pos, self.section.min_y);
@@ -541,7 +625,7 @@ impl ChunkData {
 
             if !has_found[ChunkHeightmapType::MotionBlockingNoLeaves as usize]
                 && is_motion_blocking
-                && !block.has_tag(&MINECRAFT_LEAVES)
+                && !MINECRAFT_LEAVES.1.contains(&block)
             {
                 heightmaps.set(
                     ChunkHeightmapType::MotionBlockingNoLeaves,
@@ -564,13 +648,17 @@ impl ChunkData {
         }
     }
 
+    #[must_use]
     pub fn get_highest_non_empty_subchunk(&self) -> usize {
-        for (i, sub_chunk) in self.section.sections.iter().enumerate().rev() {
-            if sub_chunk.block_states.non_air_block_count() != 0 {
-                return i;
-            }
-        }
-        0
+        self.section
+            .block_sections
+            .read()
+            .unwrap()
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, sub)| !sub.has_only_air())
+            .map_or(0, |(idx, _)| idx)
     }
 }
 
@@ -588,4 +676,62 @@ pub enum ChunkParsingError {
 pub enum ChunkSerializingError {
     #[error("Error serializing chunk: {0}")]
     ErrorSerializingChunk(pumpkin_nbt::Error),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ChunkSections;
+    use crate::chunk::palette::BlockPalette;
+    use pumpkin_data::{Block, block_properties::has_random_ticks};
+
+    #[test]
+    fn random_tick_cache_initializes_from_palette_contents() {
+        let mut sections = vec![BlockPalette::default(), BlockPalette::default()];
+        sections[1].set(0, 0, 0, Block::LAVA.default_state.id);
+
+        let cache = ChunkSections::build_random_tick_sections_cache(&sections);
+        assert!(!cache[0].is_randomly_ticking());
+        assert!(cache[1].random_ticking_fluid_count > 0);
+        assert!(cache[1].is_randomly_ticking());
+    }
+
+    #[test]
+    fn random_tick_cache_updates_on_block_mutation() {
+        let min_y = -64;
+        let sections = ChunkSections::new(1, min_y);
+
+        assert!(
+            !sections.random_tick_sections.read().unwrap()[0].is_randomly_ticking(),
+            "fresh sections should not be randomly ticking"
+        );
+
+        let random_block_state = Block::WHEAT.default_state.id;
+        assert!(
+            has_random_ticks(random_block_state),
+            "test requires a known randomly ticking block state"
+        );
+
+        sections.set_block_absolute_y(0, min_y, 0, random_block_state);
+        {
+            let cache = sections.random_tick_sections.read().unwrap();
+            assert_eq!(cache[0].random_ticking_block_count, 1);
+            assert_eq!(cache[0].random_ticking_fluid_count, 0);
+            assert!(cache[0].is_randomly_ticking());
+        }
+
+        sections.set_block_absolute_y(0, min_y, 0, Block::STONE.default_state.id);
+        {
+            let cache = sections.random_tick_sections.read().unwrap();
+            assert_eq!(cache[0].random_ticking_block_count, 0);
+            assert_eq!(cache[0].random_ticking_fluid_count, 0);
+            assert!(!cache[0].is_randomly_ticking());
+        }
+
+        sections.set_block_absolute_y(0, min_y, 0, Block::LAVA.default_state.id);
+        {
+            let cache = sections.random_tick_sections.read().unwrap();
+            assert!(cache[0].random_ticking_fluid_count > 0);
+            assert!(cache[0].is_randomly_ticking());
+        }
+    }
 }

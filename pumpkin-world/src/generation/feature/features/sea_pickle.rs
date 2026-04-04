@@ -7,11 +7,9 @@ use pumpkin_util::{
     math::{int_provider::IntProvider, position::BlockPos},
     random::{RandomGenerator, RandomImpl},
 };
-use serde::Deserialize;
 
-#[derive(Deserialize)]
 pub struct SeaPickleFeature {
-    count: IntProvider,
+    pub count: IntProvider,
 }
 
 impl SeaPickleFeature {
@@ -30,7 +28,7 @@ impl SeaPickleFeature {
             let x = random.next_bounded_i32(8) - random.next_bounded_i32(8);
             let z = random.next_bounded_i32(8) - random.next_bounded_i32(8);
             let y = chunk.ocean_floor_height_exclusive(pos.0.x + x, pos.0.z + z);
-            if GenerationCache::get_block_state(chunk, &pos.0).to_block() != &Block::WATER {
+            if GenerationCache::get_block_state(chunk, &pos.0).to_block_id() != Block::WATER {
                 continue;
             }
             let mut props = SeaPickleLikeProperties::default(&Block::SEA_PICKLE);

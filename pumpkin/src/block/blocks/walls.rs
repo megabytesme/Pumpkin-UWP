@@ -4,14 +4,12 @@ use crate::block::OnPlaceArgs;
 use pumpkin_data::BlockDirection;
 use pumpkin_data::BlockState;
 use pumpkin_data::block_properties::BlockProperties;
-use pumpkin_data::block_properties::EastWallShape;
+use pumpkin_data::block_properties::EastWall;
 use pumpkin_data::block_properties::HorizontalFacing;
-use pumpkin_data::block_properties::NorthWallShape;
-use pumpkin_data::block_properties::SouthWallShape;
-use pumpkin_data::block_properties::WestWallShape;
-use pumpkin_data::tag::RegistryKey;
+use pumpkin_data::block_properties::NorthWall;
+use pumpkin_data::block_properties::SouthWall;
+use pumpkin_data::block_properties::WestWall;
 use pumpkin_data::tag::Taggable;
-use pumpkin_data::tag::get_tag_values;
 use pumpkin_data::{Block, tag};
 use pumpkin_macros::pumpkin_block_from_tag;
 use pumpkin_util::math::position::BlockPos;
@@ -67,10 +65,10 @@ pub async fn compute_wall_state(
             } else if block_above.has_tag(&tag::Block::MINECRAFT_WALLS) {
                 let other_props = WallProperties::from_state_id(block_above_state.id, block_above);
                 match direction {
-                    HorizontalFacing::North => other_props.north != NorthWallShape::None,
-                    HorizontalFacing::South => other_props.south != SouthWallShape::None,
-                    HorizontalFacing::East => other_props.east != EastWallShape::None,
-                    HorizontalFacing::West => other_props.west != WestWallShape::None,
+                    HorizontalFacing::North => other_props.north != NorthWall::None,
+                    HorizontalFacing::South => other_props.south != SouthWall::None,
+                    HorizontalFacing::East => other_props.east != EastWall::None,
+                    HorizontalFacing::West => other_props.west != WestWall::None,
                 }
             } else if block_above.has_tag(&tag::Block::C_GLASS_PANES)
                 || block_above.has_tag(&tag::Block::MINECRAFT_FENCES)
@@ -112,18 +110,18 @@ pub async fn compute_wall_state(
         }
     }
 
-    let connected_north_south = wall_props.north != NorthWallShape::None
-        && wall_props.south != SouthWallShape::None
-        && wall_props.east == EastWallShape::None
-        && wall_props.west == WestWallShape::None;
-    let connected_east_west = wall_props.north == NorthWallShape::None
-        && wall_props.south == SouthWallShape::None
-        && wall_props.east != EastWallShape::None
-        && wall_props.west != WestWallShape::None;
-    let cross = wall_props.north != NorthWallShape::None
-        && wall_props.south != SouthWallShape::None
-        && wall_props.east != EastWallShape::None
-        && wall_props.west != WestWallShape::None;
+    let connected_north_south = wall_props.north != NorthWall::None
+        && wall_props.south != SouthWall::None
+        && wall_props.east == EastWall::None
+        && wall_props.west == WestWall::None;
+    let connected_east_west = wall_props.north == NorthWall::None
+        && wall_props.south == SouthWall::None
+        && wall_props.east != EastWall::None
+        && wall_props.west != WestWall::None;
+    let cross = wall_props.north != NorthWall::None
+        && wall_props.south != SouthWall::None
+        && wall_props.east != EastWall::None
+        && wall_props.west != WestWall::None;
 
     wall_props.up = if !(cross || connected_north_south || connected_east_west) {
         true
@@ -180,7 +178,7 @@ enum WallShape {
     Tall,
 }
 
-impl From<WallShape> for NorthWallShape {
+impl From<WallShape> for NorthWall {
     fn from(value: WallShape) -> Self {
         match value {
             WallShape::None => Self::None,
@@ -190,7 +188,7 @@ impl From<WallShape> for NorthWallShape {
     }
 }
 
-impl From<WallShape> for SouthWallShape {
+impl From<WallShape> for SouthWall {
     fn from(value: WallShape) -> Self {
         match value {
             WallShape::None => Self::None,
@@ -200,7 +198,7 @@ impl From<WallShape> for SouthWallShape {
     }
 }
 
-impl From<WallShape> for EastWallShape {
+impl From<WallShape> for EastWall {
     fn from(value: WallShape) -> Self {
         match value {
             WallShape::None => Self::None,
@@ -210,7 +208,7 @@ impl From<WallShape> for EastWallShape {
     }
 }
 
-impl From<WallShape> for WestWallShape {
+impl From<WallShape> for WestWall {
     fn from(value: WallShape) -> Self {
         match value {
             WallShape::None => Self::None,

@@ -1,10 +1,12 @@
 pub mod armor_stand;
 pub mod axe;
+pub mod boat;
 pub mod bucket;
 pub mod dye;
 pub mod egg;
 pub mod end_crystal;
 pub mod ender_eye;
+pub mod firework_rocket;
 pub mod glowing_ink_sac;
 pub mod hoe;
 pub mod honeycomb;
@@ -13,6 +15,7 @@ pub mod ink_sac;
 pub mod mace;
 pub mod minecart;
 pub mod name_tag;
+pub mod potions;
 pub mod shovel;
 pub mod snowball;
 pub mod spawn_egg;
@@ -21,13 +24,16 @@ pub mod trident;
 pub mod wind_charge;
 
 use crate::item::items::armor_stand::ArmorStandItem;
+use crate::item::items::boat::BoatItem;
 use crate::item::items::end_crystal::EndCrystalItem;
+use crate::item::items::firework_rocket::FireworkRocketItem;
 use crate::item::items::minecart::MinecartItem;
 use crate::item::items::name_tag::NameTagItem;
 use crate::item::items::spawn_egg::SpawnEggItem;
 use crate::item::items::wind_charge::WindChargeItem;
 
 use super::registry::ItemRegistry;
+use crate::item::items::potions::{LingeringPotionItem, PotionItem, SplashPotionItem};
 use axe::AxeItem;
 use bucket::{EmptyBucketItem, FilledBucketItem};
 use dye::DyeItem;
@@ -57,6 +63,9 @@ pub fn default_registry() -> Arc<ItemRegistry> {
     manager.register(SwordItem);
     manager.register(MaceItem);
     manager.register(TridentItem);
+    // TODO: Register CrossbowItem with per-shot durability cost.
+    // TODO: Register BrushItem with per-stroke durability cost.
+    // TODO: Register CarrotOnAStickItem and WarpedFungusOnAStickItem with boost durability costs.
     manager.register(EmptyBucketItem);
     manager.register(FilledBucketItem);
     manager.register(ShovelItem);
@@ -69,10 +78,15 @@ pub fn default_registry() -> Arc<ItemRegistry> {
     manager.register(EnderEyeItem);
     manager.register(FireChargeItem);
     manager.register(DyeItem);
+    manager.register(FireworkRocketItem);
     manager.register(InkSacItem);
     manager.register(GlowingInkSacItem);
     manager.register(ArmorStandItem);
     manager.register(WindChargeItem);
+    manager.register(BoatItem);
+    manager.register(PotionItem);
+    manager.register(SplashPotionItem);
+    manager.register(LingeringPotionItem);
 
     Arc::new(manager)
 }

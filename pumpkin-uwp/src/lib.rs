@@ -3,6 +3,7 @@ use pumpkin::command::CommandSender;
 use pumpkin::entity::player::Player;
 use pumpkin::net::ClientPlatform;
 use pumpkin::server::Server;
+use pumpkin::data::VanillaData;
 use pumpkin_config::LoadConfiguration;
 use pumpkin_protocol::java::client::play::CommandSuggestion;
 use serde::Serialize;
@@ -11,6 +12,7 @@ use std::os::raw::c_char;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::{Arc, OnceLock};
 use tokio::runtime::Runtime;
+use tracing::{error, info, warn};
 
 //  GLOBAL STATE
 static SERVER_INSTANCE: OnceLock<Arc<Server>> = OnceLock::new();
@@ -86,7 +88,7 @@ impl SerializedPlayer {
             },
             rotation_yaw: entity.yaw.load(),
             rotation_pitch: entity.pitch.load(),
-            dimension: format!("{:?}", entity.world.dimension.minecraft_name),
+            dimension: format!("{:?}", entity.world.load_full().dimension.minecraft_name),
             is_sneaking: entity.sneaking.load(Ordering::Relaxed),
             is_sprinting: entity.sprinting.load(Ordering::Relaxed),
         }
@@ -142,7 +144,7 @@ fn uwp_init_panic_hook() {
             location,
             msg
         );
-        log::error!("{}", err_msg);
+        error!("{}", err_msg);
         send_to_csharp(&err_msg);
     }));
 }
@@ -159,13 +161,10 @@ pub extern "C" fn pumpkin_register_logger(cb: LogCallback) {
 pub extern "C" fn pumpkin_get_players_json() -> *mut c_char {
     if let Some(server) = SERVER_INSTANCE.get() {
         let mut player_list = Vec::new();
-        if let Ok(worlds) = server.worlds.try_read() {
-            for world in worlds.iter() {
-                if let Ok(players_map) = world.players.try_read() {
-                    for (_, player) in players_map.iter() {
-                        player_list.push(SerializedPlayer::from_player(player));
-                    }
-                }
+        let worlds = server.worlds.load();
+        for world in worlds.iter() {
+            for player in world.players.load().iter() {
+                player_list.push(SerializedPlayer::from_player(player));
             }
         }
         let json = serde_json::to_string(&player_list).unwrap_or_else(|_| "[]".to_string());
@@ -194,13 +193,10 @@ pub extern "C" fn pumpkin_get_metrics_json() -> *mut c_char {
         let mut loaded_chunks = 0;
         let mut player_count = 0;
 
-        if let Ok(worlds) = server.worlds.try_read() {
-            for world in worlds.iter() {
-                loaded_chunks += world.level.loaded_chunk_count();
-                if let Ok(p) = world.players.try_read() {
-                    player_count += p.len();
-                }
-            }
+        let worlds = server.worlds.load();
+        for world in worlds.iter() {
+            loaded_chunks += world.level.loaded_chunk_count();
+            player_count += world.players.load().len();
         }
 
         let metrics = SerializedMetrics {
@@ -233,37 +229,40 @@ pub extern "C" fn pumpkin_get_completions_json(input_utf8: *const c_char) -> *mu
         };
 
         if let Some(rt) = RUNTIME.get() {
-            let suggestions = rt.block_on(async move {
+            let suggestions: Vec<CommandSuggestion> = rt.block_on(async move {
                 let dispatcher = server_ref.command_dispatcher.read().await;
+                let source = CommandSender::Console.into_source(&server_ref).await;
 
                 if !full_input.contains(' ') {
-                    let mut matches = Vec::new();
-                    for key in dispatcher.commands.keys() {
-                        if key.starts_with(&full_input) {
-                            matches.push(CommandSuggestion {
-                                suggestion: key.clone(),
-                                tooltip: None,
-                            });
-                        }
-                    }
-                    return matches;
+                    return dispatcher
+                        .get_all_commands()
+                        .keys()
+                        .filter(|key| key.starts_with(&full_input))
+                        .map(|key| CommandSuggestion {
+                            suggestion: (*key).to_string(),
+                            tooltip: None,
+                        })
+                        .collect();
                 }
 
-                let src = CommandSender::Console;
-                let query = if full_input.ends_with(' ') {
-                    full_input.clone()
-                } else {
-                    full_input.clone()
-                };
-
-                dispatcher.find_suggestions(&src, &server_ref, &query).await
+                let parsed = dispatcher.parse_input(&full_input, &source).await;
+                dispatcher
+                    .get_completion_suggestions_at_end(parsed)
+                    .await
+                    .suggestions
+                    .into_iter()
+                    .map(|suggestion| CommandSuggestion {
+                        suggestion: suggestion.text.cached_text().clone(),
+                        tooltip: suggestion.tooltip,
+                    })
+                    .collect()
             });
 
             let results: Vec<SerializedSuggestion> = suggestions
                 .into_iter()
                 .map(|s| SerializedSuggestion {
                     text: s.suggestion,
-                    tooltip: s.tooltip.map(|t| t.get_text()),
+                    tooltip: s.tooltip.map(pumpkin_util::text::TextComponent::get_text),
                 })
                 .collect();
 
@@ -290,12 +289,11 @@ pub extern "C" fn pumpkin_inject_command(cmd_utf8: *const c_char) {
             if let Some(rt) = RUNTIME.get() {
                 rt.spawn(async move {
                     let dispatcher = server_ref.command_dispatcher.read().await;
+                    let source = pumpkin::command::CommandSender::Console
+                        .into_source(&server_ref)
+                        .await;
                     dispatcher
-                        .handle_command(
-                            &pumpkin::command::CommandSender::Console,
-                            &server_ref,
-                            &command,
-                        )
+                        .handle_command(&source, &command)
                         .await;
                 });
             }
@@ -324,6 +322,7 @@ pub extern "C" fn pumpkin_run_from_config_dir(config_dir_utf8: *const c_char) ->
 
         let basic_config = pumpkin_config::BasicConfiguration::load(&config_dir);
         let advanced_config = pumpkin_config::AdvancedConfiguration::load(&config_dir);
+        let vanilla_data = VanillaData::load();
 
         let cb_ptr = LOG_CALLBACK.load(Ordering::Relaxed);
         let callback = if !cb_ptr.is_null() {
@@ -337,28 +336,28 @@ pub extern "C" fn pumpkin_run_from_config_dir(config_dir_utf8: *const c_char) ->
 
         pumpkin::init_logger(&advanced_config, &config_dir, callback);
 
-        log::info!(
+        info!(
             "============================================================================================"
         );
-        log::info!(" Universal Pumpkin");
-        log::info!(" Unofficial Wrapper powered by the Pumpkin-MC Server Core");
-        log::info!(" Project Page: https://github.com/megabytesme/Universal-Pumpkin");
-        log::info!(
+        info!(" Universal Pumpkin");
+        info!(" Unofficial Wrapper powered by the Pumpkin-MC Server Core");
+        info!(" Project Page: https://github.com/megabytesme/Universal-Pumpkin");
+        info!(
             " Please report only UI issues here: https://github.com/megabytesme/Universal-Pumpkin/issues"
         );
-        log::info!(
+        info!(
             "============================================================================================"
         );
 
-        log::info!("");
+        info!("");
 
-        log::info!(
+        info!(
             "Starting Pumpkin {} Minecraft (Protocol {})",
             env!("CARGO_PKG_VERSION"),
-            pumpkin_data::packet::CURRENT_MC_PROTOCOL
+            pumpkin_data::packet::CURRENT_MC_VERSION.protocol_version()
         );
 
-        log::info!(
+        info!(
             "Build info: FAMILY: \"{}\", OS: \"{}\", ARCH: \"{}\", BUILD: \"{}\"",
             std::env::consts::FAMILY,
             std::env::consts::OS,
@@ -370,9 +369,9 @@ pub extern "C" fn pumpkin_run_from_config_dir(config_dir_utf8: *const c_char) ->
             }
         );
 
-        log::warn!("Pumpkin is currently under heavy development!");
-        log::info!("Report issues on https://github.com/Pumpkin-MC/Pumpkin/issues");
-        log::info!("Join our Discord for community support: https://discord.com/invite/wT8XjrjKkf");
+        warn!("Pumpkin is currently under heavy development!");
+        info!("Report issues on https://github.com/Pumpkin-MC/Pumpkin/issues");
+        info!("Join our Discord for community support: https://discord.gg/pumpkinmc");
 
         let rt = match tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -380,7 +379,7 @@ pub extern "C" fn pumpkin_run_from_config_dir(config_dir_utf8: *const c_char) ->
         {
             Ok(rt) => rt,
             Err(e) => {
-                log::error!("Failed to create runtime: {}", e);
+                error!("Failed to create runtime: {}", e);
                 return -6;
             }
         };
@@ -389,13 +388,13 @@ pub extern "C" fn pumpkin_run_from_config_dir(config_dir_utf8: *const c_char) ->
 
         RUNTIME.get().unwrap().block_on(async {
             let pumpkin_server =
-                PumpkinServer::new(basic_config, advanced_config, &config_dir).await;
+                PumpkinServer::new(basic_config, advanced_config, &config_dir, vanilla_data).await;
 
             let _ = SERVER_INSTANCE.set(pumpkin_server.server.clone());
 
             pumpkin_server.init_plugins().await;
 
-            log::info!(
+            info!(
                 "Started server; took {}ms",
                 startup_time.elapsed().as_millis()
             );
@@ -415,11 +414,11 @@ pub extern "C" fn pumpkin_run_from_config_dir(config_dir_utf8: *const c_char) ->
                     b_cfg.bedrock_edition_address
                 ));
             }
-            log::info!("{}", connection_info);
+            info!("{}", connection_info);
 
             pumpkin_server.start().await;
 
-            log::info!("The server has stopped.");
+            info!("The server has stopped.");
             0
         })
     });

@@ -1,6 +1,5 @@
-use pumpkin_data::{Block, BlockDirection};
+use pumpkin_data::Block;
 use pumpkin_util::{math::position::BlockPos, random::RandomGenerator};
-use serde::Deserialize;
 
 use crate::generation::proto_chunk::GenerationCache;
 use crate::{
@@ -8,10 +7,9 @@ use crate::{
     world::{BlockAccessor, BlockRegistryExt},
 };
 
-#[derive(Deserialize)]
 pub struct SimpleBlockFeature {
-    to_place: BlockStateProvider,
-    schedule_tick: Option<bool>,
+    pub to_place: BlockStateProvider,
+    pub schedule_tick: Option<bool>,
 }
 
 impl SimpleBlockFeature {
@@ -25,7 +23,7 @@ impl SimpleBlockFeature {
         let state = self.to_place.get(random, pos);
         let block = Block::from_state_id(state.id);
         let block_accessor: &dyn BlockAccessor = chunk;
-        if !block_registry.can_place_at(block, block_accessor, &pos, BlockDirection::Up) {
+        if !block_registry.can_place_at(block, state, block_accessor, &pos) {
             return false;
         }
 

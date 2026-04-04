@@ -1,8 +1,8 @@
 use core::f32;
 
 use crate::entity::{Entity, EntityBase, EntityBaseFuture, NBTStorage, living::LivingEntity};
-use pumpkin_data::damage::DamageType;
-use pumpkin_protocol::java::client::play::{MetaDataType, Metadata};
+use pumpkin_data::{damage::DamageType, meta_data_type::MetaDataType, tracked_data::TrackedData};
+use pumpkin_protocol::java::client::play::Metadata;
 use pumpkin_util::math::vector3::Vector3;
 
 pub struct EndCrystalEntity {
@@ -10,7 +10,7 @@ pub struct EndCrystalEntity {
 }
 
 impl EndCrystalEntity {
-    pub fn new(entity: Entity) -> Self {
+    pub const fn new(entity: Entity) -> Self {
         Self { entity }
     }
 }
@@ -18,7 +18,11 @@ impl EndCrystalEntity {
 impl EndCrystalEntity {
     pub async fn set_show_bottom(&self, show_bottom: bool) {
         self.entity
-            .send_meta_data(&[Metadata::new(9, MetaDataType::Boolean, show_bottom)])
+            .send_meta_data(&[Metadata::new(
+                TrackedData::SHOW_BOTTOM,
+                MetaDataType::BOOLEAN,
+                show_bottom,
+            )])
             .await;
     }
 }
@@ -45,7 +49,11 @@ impl EntityBase for EndCrystalEntity {
     ) -> EntityBaseFuture<'a, bool> {
         Box::pin(async move {
             if damage_type != DamageType::EXPLOSION {
-                self.entity.world.explode(self.entity.pos.load(), 6.0).await;
+                self.entity
+                    .world
+                    .load()
+                    .explode(self.entity.pos.load(), 6.0)
+                    .await;
             }
 
             // TODO

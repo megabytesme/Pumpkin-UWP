@@ -3,7 +3,7 @@ use pumpkin_data::block_properties::HorizontalFacing;
 use pumpkin_data::block_properties::PoweredRailLikeProperties;
 use pumpkin_data::block_properties::RailLikeProperties;
 use pumpkin_data::block_properties::RailShape;
-use pumpkin_data::block_properties::StraightRailShape;
+use pumpkin_data::block_properties::RailShapeStraight;
 use pumpkin_data::tag::Taggable;
 use pumpkin_data::{Block, tag};
 use pumpkin_util::math::position::BlockPos;
@@ -182,28 +182,28 @@ impl RailProperties {
         }
     }
 
-    fn can_curve(&self) -> bool {
+    const fn can_curve(&self) -> bool {
         match self {
             Self::Rail(_) => true,
             Self::StraightRail(_) => false,
         }
     }
 
-    fn shape(&self) -> RailShape {
+    const fn shape(&self) -> RailShape {
         match self {
             Self::Rail(props) => props.shape,
             Self::StraightRail(props) => match props.shape {
-                StraightRailShape::NorthSouth => RailShape::NorthSouth,
-                StraightRailShape::EastWest => RailShape::EastWest,
-                StraightRailShape::AscendingEast => RailShape::AscendingEast,
-                StraightRailShape::AscendingWest => RailShape::AscendingWest,
-                StraightRailShape::AscendingNorth => RailShape::AscendingNorth,
-                StraightRailShape::AscendingSouth => RailShape::AscendingSouth,
+                RailShapeStraight::NorthSouth => RailShape::NorthSouth,
+                RailShapeStraight::EastWest => RailShape::EastWest,
+                RailShapeStraight::AscendingEast => RailShape::AscendingEast,
+                RailShapeStraight::AscendingWest => RailShape::AscendingWest,
+                RailShapeStraight::AscendingNorth => RailShape::AscendingNorth,
+                RailShapeStraight::AscendingSouth => RailShape::AscendingSouth,
             },
         }
     }
 
-    fn directions(&self) -> [HorizontalFacing; 2] {
+    const fn directions(&self) -> [HorizontalFacing; 2] {
         match self {
             Self::Rail(props) => match props.shape {
                 RailShape::EastWest | RailShape::AscendingEast | RailShape::AscendingWest => {
@@ -219,15 +219,15 @@ impl RailProperties {
             },
 
             Self::StraightRail(props) => match props.shape {
-                StraightRailShape::EastWest
-                | StraightRailShape::AscendingEast
-                | StraightRailShape::AscendingWest => {
+                RailShapeStraight::EastWest
+                | RailShapeStraight::AscendingEast
+                | RailShapeStraight::AscendingWest => {
                     [HorizontalFacing::West, HorizontalFacing::East]
                 }
 
-                StraightRailShape::NorthSouth
-                | StraightRailShape::AscendingNorth
-                | StraightRailShape::AscendingSouth => {
+                RailShapeStraight::NorthSouth
+                | RailShapeStraight::AscendingNorth
+                | RailShapeStraight::AscendingSouth => {
                     [HorizontalFacing::North, HorizontalFacing::South]
                 }
             },
@@ -241,7 +241,7 @@ impl RailProperties {
         }
     }
 
-    fn set_waterlogged(&mut self, waterlogged: bool) {
+    const fn set_waterlogged(&mut self, waterlogged: bool) {
         match self {
             Self::Rail(props) => props.waterlogged = waterlogged,
             Self::StraightRail(props) => props.waterlogged = waterlogged,
@@ -253,33 +253,33 @@ impl RailProperties {
             Self::Rail(props) => props.shape = shape,
             Self::StraightRail(props) => {
                 props.shape = match shape {
-                    RailShape::NorthSouth => StraightRailShape::NorthSouth,
-                    RailShape::EastWest => StraightRailShape::EastWest,
-                    RailShape::AscendingEast => StraightRailShape::AscendingEast,
-                    RailShape::AscendingWest => StraightRailShape::AscendingWest,
-                    RailShape::AscendingNorth => StraightRailShape::AscendingNorth,
-                    RailShape::AscendingSouth => StraightRailShape::AscendingSouth,
+                    RailShape::NorthSouth => RailShapeStraight::NorthSouth,
+                    RailShape::EastWest => RailShapeStraight::EastWest,
+                    RailShape::AscendingEast => RailShapeStraight::AscendingEast,
+                    RailShape::AscendingWest => RailShapeStraight::AscendingWest,
+                    RailShape::AscendingNorth => RailShapeStraight::AscendingNorth,
+                    RailShape::AscendingSouth => RailShapeStraight::AscendingSouth,
                     _ => unreachable!("Trying to make a straight rail curved: {:?}", shape),
                 }
             }
         }
     }
 
-    fn set_straight_shape(&mut self, shape: StraightRailShape) {
+    fn set_straight_shape(&mut self, shape: RailShapeStraight) {
         match self {
             Self::Rail(props) => props.shape = shape.as_shape(),
             Self::StraightRail(props) => props.shape = shape,
         }
     }
 
-    fn is_powered(&self) -> bool {
+    const fn is_powered(&self) -> bool {
         match self {
             Self::Rail(_) => false,
             Self::StraightRail(props) => props.powered,
         }
     }
 
-    fn set_powered(&mut self, powered: bool) {
+    const fn set_powered(&mut self, powered: bool) {
         match self {
             Self::Rail(_) => {}
             Self::StraightRail(props) => props.powered = powered,
@@ -298,7 +298,7 @@ pub trait StraightRailShapeExt {
     fn as_shape(&self) -> RailShape;
 }
 
-impl StraightRailShapeExt for StraightRailShape {
+impl StraightRailShapeExt for RailShapeStraight {
     fn as_shape(&self) -> RailShape {
         match self {
             Self::NorthSouth => RailShape::NorthSouth,
@@ -312,24 +312,24 @@ impl StraightRailShapeExt for StraightRailShape {
 }
 
 pub trait HorizontalFacingRailExt {
-    fn to_rail_shape_flat(&self) -> StraightRailShape;
-    fn to_rail_shape_ascending_towards(&self) -> StraightRailShape;
+    fn to_rail_shape_flat(&self) -> RailShapeStraight;
+    fn to_rail_shape_ascending_towards(&self) -> RailShapeStraight;
 }
 
 impl HorizontalFacingRailExt for HorizontalFacing {
-    fn to_rail_shape_flat(&self) -> StraightRailShape {
+    fn to_rail_shape_flat(&self) -> RailShapeStraight {
         match self {
-            Self::North | Self::South => StraightRailShape::NorthSouth,
-            Self::East | Self::West => StraightRailShape::EastWest,
+            Self::North | Self::South => RailShapeStraight::NorthSouth,
+            Self::East | Self::West => RailShapeStraight::EastWest,
         }
     }
 
-    fn to_rail_shape_ascending_towards(&self) -> StraightRailShape {
+    fn to_rail_shape_ascending_towards(&self) -> RailShapeStraight {
         match self {
-            Self::North => StraightRailShape::AscendingNorth,
-            Self::South => StraightRailShape::AscendingSouth,
-            Self::East => StraightRailShape::AscendingEast,
-            Self::West => StraightRailShape::AscendingWest,
+            Self::North => RailShapeStraight::AscendingNorth,
+            Self::South => RailShapeStraight::AscendingSouth,
+            Self::East => RailShapeStraight::AscendingEast,
+            Self::West => RailShapeStraight::AscendingWest,
         }
     }
 }

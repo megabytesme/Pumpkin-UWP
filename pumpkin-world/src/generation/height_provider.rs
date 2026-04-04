@@ -1,41 +1,38 @@
-use pumpkin_util::random::{RandomGenerator, RandomImpl};
-use serde::Deserialize;
+use std::num::NonZeroU32;
 
-use super::y_offset::YOffset;
+use pumpkin_util::{
+    random::{RandomGenerator, RandomImpl},
+    y_offset::YOffset,
+};
+use tracing::warn;
 
-#[derive(Deserialize)]
-#[serde(tag = "type")]
 pub enum HeightProvider {
-    #[serde(rename = "minecraft:uniform")]
     Uniform(UniformHeightProvider),
-    #[serde(rename = "minecraft:trapezoid")]
     Trapezoid(TrapezoidHeightProvider),
-    #[serde(rename = "minecraft:very_biased_to_bottom")]
     VeryBiasedToBottom(VeryBiasedToBottomHeightProvider),
 }
 
 impl HeightProvider {
     pub fn get(&self, random: &mut RandomGenerator, min_y: i8, height: u16) -> i32 {
         match self {
-            HeightProvider::Uniform(provider) => provider.get(random, min_y, height),
-            HeightProvider::Trapezoid(provider) => provider.get(random, min_y, height),
-            HeightProvider::VeryBiasedToBottom(provider) => provider.get(random, min_y, height),
+            Self::Uniform(provider) => provider.get(random, min_y, height),
+            Self::Trapezoid(provider) => provider.get(random, min_y, height),
+            Self::VeryBiasedToBottom(provider) => provider.get(random, min_y, height),
         }
     }
 }
 
-#[derive(Deserialize)]
 pub struct VeryBiasedToBottomHeightProvider {
-    min_inclusive: YOffset,
-    max_inclusive: YOffset,
-    inner: Option<u32>,
+    pub min_inclusive: YOffset,
+    pub max_inclusive: YOffset,
+    pub inner: Option<NonZeroU32>,
 }
 
 impl VeryBiasedToBottomHeightProvider {
     pub fn get(&self, random: &mut RandomGenerator, min_y: i8, height: u16) -> i32 {
         let min = self.min_inclusive.get_y(min_y as i16, height);
         let max = self.max_inclusive.get_y(min_y as i16, height);
-        let inner = self.inner.unwrap_or(1) as i32;
+        let inner = self.inner.map_or(1, std::num::NonZero::get) as i32;
 
         let min_rnd = random.next_inbetween_i32(min + inner, max);
         let max_rnd = random.next_inbetween_i32(min, min_rnd - 1);
@@ -44,10 +41,9 @@ impl VeryBiasedToBottomHeightProvider {
     }
 }
 
-#[derive(Deserialize)]
 pub struct UniformHeightProvider {
-    min_inclusive: YOffset,
-    max_inclusive: YOffset,
+    pub min_inclusive: YOffset,
+    pub max_inclusive: YOffset,
 }
 
 impl UniformHeightProvider {
@@ -59,11 +55,10 @@ impl UniformHeightProvider {
     }
 }
 
-#[derive(Deserialize)]
 pub struct TrapezoidHeightProvider {
-    min_inclusive: YOffset,
-    max_inclusive: YOffset,
-    plateau: Option<i32>,
+    pub min_inclusive: YOffset,
+    pub max_inclusive: YOffset,
+    pub plateau: Option<i32>,
 }
 
 impl TrapezoidHeightProvider {
@@ -73,7 +68,7 @@ impl TrapezoidHeightProvider {
         let j = self.max_inclusive.get_y(min_y as i16, height);
 
         if i > j {
-            log::warn!("Empty height range");
+            warn!("Empty height range");
             return i;
         }
 

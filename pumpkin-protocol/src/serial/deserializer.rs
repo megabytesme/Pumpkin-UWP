@@ -1,5 +1,5 @@
 use std::{
-    io::{Error, Read},
+    io::{Error, ErrorKind, Read},
     net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
 };
 
@@ -133,20 +133,35 @@ impl<T: PacketRead, const N: usize> PacketRead for [T; N] {
 
 impl PacketRead for String {
     fn read<R: Read>(reader: &mut R) -> Result<Self, Error> {
-        let vec = Vec::read(reader)?;
-        Ok(unsafe { String::from_utf8_unchecked(vec) })
+        const MAX_STRING_LENGTH: usize = 32767;
+
+        let len = u32::read(reader)? as usize;
+
+        if len > MAX_STRING_LENGTH {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                format!("String length {len} exceeds maximum of {MAX_STRING_LENGTH}"),
+            ));
+        }
+
+        let mut buf = vec![0u8; len];
+        reader.read_exact(&mut buf)?;
+
+        Self::from_utf8(buf)
+            .map_err(|_| Error::new(ErrorKind::InvalidData, "Invalid UTF-8 sequence"))
     }
 }
 
 impl PacketRead for Vec<u8> {
+    #[expect(clippy::read_zero_byte_vec)]
     fn read<R: Read>(reader: &mut R) -> Result<Self, Error> {
         #[expect(clippy::uninit_vec)]
         {
             let len = VarUInt::read(reader)?.0 as _;
-            let mut buf = Vec::with_capacity(len);
+            let mut buf = Self::with_capacity(len);
             unsafe {
                 buf.set_len(len);
-            }
+            };
             reader.read_exact(&mut buf)?;
             Ok(buf)
         }
@@ -178,7 +193,7 @@ impl PacketRead for SocketAddr {
             4 => {
                 let ip = u32::read_be(reader)?;
                 let port = u16::read_be(reader)?;
-                Ok(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::from(ip), port)))
+                Ok(Self::V4(SocketAddrV4::new(Ipv4Addr::from(ip), port)))
             }
             6 => {
                 // Addr family
@@ -192,9 +207,7 @@ impl PacketRead for SocketAddr {
 
                 let scope_id = u32::read_be(reader)?;
 
-                Ok(SocketAddr::V6(SocketAddrV6::new(
-                    ip, port, flowinfo, scope_id,
-                )))
+                Ok(Self::V6(SocketAddrV6::new(ip, port, flowinfo, scope_id)))
             }
             _ => Err(Error::other("Invalid socket address version")),
         }
@@ -205,16 +218,12 @@ impl PacketRead for Uuid {
     fn read<R: Read>(reader: &mut R) -> Result<Self, Error> {
         let mut bytes = [0; 16];
         reader.read_exact(&mut bytes)?;
-        Ok(Uuid::from_bytes(bytes))
+        Ok(Self::from_bytes(bytes))
     }
 }
 
 impl<T: PacketRead> PacketRead for Option<T> {
     fn read<R: Read>(reader: &mut R) -> Result<Self, Error> {
-        Ok(if bool::read(reader)? {
-            Some(T::read(reader)?)
-        } else {
-            None
-        })
+        bool::read(reader)?.then(|| T::read(reader)).transpose()
     }
 }

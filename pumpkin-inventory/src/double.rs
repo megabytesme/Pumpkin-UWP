@@ -1,9 +1,7 @@
 use std::{any::Any, pin::Pin, sync::Arc};
 
-use pumpkin_world::{
-    inventory::{Clearable, Inventory, InventoryFuture},
-    item::ItemStack,
-};
+use pumpkin_data::item_stack::ItemStack;
+use pumpkin_world::inventory::{Clearable, Inventory, InventoryFuture};
 use tokio::sync::Mutex;
 
 pub struct DoubleInventory {
@@ -65,9 +63,9 @@ impl Inventory for DoubleInventory {
     fn set_stack(&self, slot: usize, stack: ItemStack) -> InventoryFuture<'_, ()> {
         Box::pin(async move {
             if slot >= self.first.size() {
-                self.second.set_stack(slot - self.first.size(), stack).await
+                self.second.set_stack(slot - self.first.size(), stack).await;
             } else {
-                self.first.set_stack(slot, stack).await
+                self.first.set_stack(slot, stack).await;
             }
         })
     }

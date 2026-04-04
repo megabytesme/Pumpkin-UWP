@@ -1,18 +1,16 @@
-use pumpkin_data::Block;
+use pumpkin_data::{Block, BlockState};
 use pumpkin_util::{
     math::{int_provider::IntProvider, position::BlockPos},
     random::RandomGenerator,
 };
-use serde::Deserialize;
 
 use crate::generation::proto_chunk::GenerationCache;
-use crate::{block::BlockStateCodec, world::BlockRegistryExt};
+use crate::world::BlockRegistryExt;
 
-#[derive(Deserialize)]
 pub struct ReplaceBlobsFeature {
-    target: BlockStateCodec,
-    state: BlockStateCodec,
-    radius: IntProvider,
+    pub target: &'static BlockState,
+    pub state: &'static BlockState,
+    pub radius: IntProvider,
 }
 
 impl ReplaceBlobsFeature {
@@ -27,8 +25,8 @@ impl ReplaceBlobsFeature {
         random: &mut RandomGenerator,
         pos: BlockPos,
     ) -> bool {
-        let target = self.target.get_block();
-        let state = self.state.get_state();
+        let target = Block::from_state_id(self.target.id);
+        let state = &self.state;
         let Some(pos) = Self::move_down_to_target(pos, chunk, target) else {
             return false;
         };
@@ -44,7 +42,7 @@ impl ReplaceBlobsFeature {
                 break;
             }
             let current_state = GenerationCache::get_block_state(chunk, &iter_pos.0);
-            if current_state.to_block() != target {
+            if current_state.to_block_id() != target.id {
                 continue;
             }
             chunk.set_block_state(&iter_pos.0, state);
@@ -56,12 +54,12 @@ impl ReplaceBlobsFeature {
 
     fn move_down_to_target<T: GenerationCache>(
         mut pos: BlockPos,
-        chunk: &mut T,
+        chunk: &T,
         target: &'static Block,
     ) -> Option<BlockPos> {
         while pos.0.y > chunk.bottom_y() as i32 + 1 {
             let state = GenerationCache::get_block_state(chunk, &pos.0);
-            if state.to_block() == target {
+            if state.to_block_id() == target.id {
                 return Some(pos);
             }
 

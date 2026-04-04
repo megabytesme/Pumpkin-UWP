@@ -1,3 +1,4 @@
+pub mod brewing;
 pub mod container_click;
 pub mod crafting;
 pub mod double;
@@ -19,6 +20,7 @@ use pumpkin_data::data_component_impl::EquipmentSlot;
 
 use crate::player::player_inventory::PlayerInventory;
 
+#[must_use]
 pub fn build_equipment_slots() -> HashMap<usize, EquipmentSlot> {
     let mut equipment_slots = HashMap::new();
     equipment_slots.insert(

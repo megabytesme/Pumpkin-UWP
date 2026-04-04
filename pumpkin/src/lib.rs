@@ -1,27 +1,23 @@
 // Not warn event sending macros
 #![allow(unused_labels)]
 
-use crate::logging::ReadlineLogWrapper;
-use crate::net::DisconnectReason;
+use crate::data::VanillaData;
+use crate::logging::{GzipRollingLogger, PumpkinCommandCompleter, ReadlineLogWrapper};
 use crate::net::bedrock::BedrockClient;
-use crate::net::java::JavaClient;
+use crate::net::java::{JavaClient, PacketHandlerResult};
+use crate::net::{ClientPlatform, DisconnectReason};
 use crate::net::{lan_broadcast::LANBroadcast, query, rcon::RCONServer};
 use crate::server::{Server, ticker::Ticker};
-use log::{Level, LevelFilter};
-use net::authentication::fetch_mojang_public_keys;
-use plugin::PluginManager;
 use plugin::server::server_command::ServerCommandEvent;
 use pumpkin_config::{AdvancedConfiguration, BasicConfiguration};
 use pumpkin_macros::send_cancellable;
-use pumpkin_protocol::ConnectionState::Play;
-use pumpkin_util::permission::{PermissionManager, PermissionRegistry};
 use pumpkin_util::text::TextComponent;
-#[cfg(feature = "console")]
-use rustyline_async::{Readline, ReadlineEvent};
+use rustyline::Editor;
+use rustyline::history::FileHistory;
+use rustyline::{Config, error::ReadlineError};
 use std::collections::HashMap;
-#[cfg(feature = "console")]
-use std::io::IsTerminal;
-use std::io::{Cursor, stdin};
+use std::future::Future;
+use std::io::{Cursor, ErrorKind, IsTerminal, stdin};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -29,9 +25,14 @@ use std::time::Duration;
 use std::{net::SocketAddr, sync::LazyLock};
 use tokio::net::{TcpListener, UdpSocket};
 use tokio::select;
-use tokio::sync::{Mutex, Notify, RwLock};
+use tokio::sync::Mutex;
 use tokio::time::sleep;
+use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
+use tracing::{debug, error, info, warn};
+use tracing_subscriber::filter::LevelFilter;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 
 pub mod block;
 pub mod command;
@@ -45,143 +46,170 @@ pub mod plugin;
 pub mod server;
 pub mod world;
 
-pub static PLUGIN_MANAGER: LazyLock<Arc<PluginManager>> =
-    LazyLock::new(|| Arc::new(PluginManager::new()));
+pub struct LoggingConfig {
+    pub color: bool,
+    pub threads: bool,
+    pub timestamp: bool,
+}
 
-pub static PERMISSION_REGISTRY: LazyLock<Arc<RwLock<PermissionRegistry>>> =
-    LazyLock::new(|| Arc::new(RwLock::new(PermissionRegistry::new())));
-
-pub static PERMISSION_MANAGER: LazyLock<Arc<RwLock<PermissionManager>>> = LazyLock::new(|| {
-    Arc::new(RwLock::new(PermissionManager::new(
-        PERMISSION_REGISTRY.clone(),
-    )))
-});
-
-pub type LoggerOption = Option<(ReadlineLogWrapper, LevelFilter)>;
+pub type LoggerOption = Option<(ReadlineLogWrapper, LevelFilter, LoggingConfig)>;
 pub static LOGGER_IMPL: LazyLock<Arc<OnceLock<LoggerOption>>> =
     LazyLock::new(|| Arc::new(OnceLock::new()));
 
+#[expect(clippy::print_stderr)]
 pub fn init_logger(
     advanced_config: &AdvancedConfiguration,
-    probe_root: &std::path::Path,
+    config_dir: &std::path::Path,
     external_callback: Option<crate::logging::LogCallbackFn>,
 ) {
-    use crate::logging::{CallbackLogger, GzipRollingLogger, ReadlineLogWrapper};
-    use simplelog::{CombinedLogger, ConfigBuilder, SharedLogger};
+    use tracing_subscriber::EnvFilter;
+    use tracing_subscriber::fmt;
 
-    if !advanced_config.logging.enabled {
-        let _ = LOGGER_IMPL.set(None);
-        return;
-    }
+    let logger = advanced_config.logging.enabled.then(|| {
+        let level = std::env::var("RUST_LOG")
+            .ok()
+            .as_deref()
+            .map(LevelFilter::from_str)
+            .and_then(Result::ok)
+            .unwrap_or(LevelFilter::INFO);
 
-    let mut config = ConfigBuilder::new();
+        let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+            let level_str = match level {
+                LevelFilter::OFF => "off",
+                LevelFilter::ERROR => "error",
+                LevelFilter::WARN => "warn",
+                LevelFilter::INFO => "info",
+                LevelFilter::DEBUG => "debug",
+                LevelFilter::TRACE => "trace",
+            };
+            EnvFilter::new(level_str)
+        });
 
-    if advanced_config.logging.timestamp {
-        config.set_time_format_custom(time::macros::format_description!(
-            "[year]-[month]-[day] [hour]:[minute]:[second]"
-        ));
-        config.set_time_level(LevelFilter::Error);
-        let _ = config.set_time_offset_to_local();
-    } else {
-        config.set_time_level(LevelFilter::Off);
-    }
+        let file_logger: Option<GzipRollingLogger> = if advanced_config.logging.file.is_empty() {
+            None
+        } else {
+            Some(
+                GzipRollingLogger::new(
+                    level,
+                    advanced_config.logging.file.clone(),
+                    config_dir,
+                    external_callback,
+                )
+                    .expect("Failed to initialize file logger."),
+            )
+        };
 
-    if !advanced_config.logging.color {
-        for level in Level::iter() {
-            config.set_level_color(level, None);
-        }
-    } else {
-        // We are technically logging to a file-like object.
-        config.set_write_log_enable_colors(true);
-    }
+        let (logger, rl): (
+            Box<dyn std::io::Write + Send + 'static>,
+            Option<Editor<PumpkinCommandCompleter, FileHistory>>,
+        ) = if advanced_config.commands.use_tty && stdin().is_terminal() {
+            let rl_config = Config::builder()
+                .auto_add_history(true)
+                .completion_type(rustyline::CompletionType::List)
+                .edit_mode(rustyline::EditMode::Emacs)
+                .build();
+            let helper = PumpkinCommandCompleter::new();
 
-    if !advanced_config.logging.threads {
-        config.set_thread_level(LevelFilter::Off);
-    } else {
-        config.set_thread_level(LevelFilter::Info);
-    }
-
-    let log_config = config.build();
-
-    let level = std::env::var("RUST_LOG")
-        .ok()
-        .as_deref()
-        .map(log::LevelFilter::from_str)
-        .and_then(Result::ok)
-        .unwrap_or(log::LevelFilter::Info);
-
-    let mut shared_loggers: Vec<Box<dyn SharedLogger>> = Vec::new();
-
-    // File Logger (Absolute Path)
-    if !advanced_config.logging.file.is_empty() {
-        match GzipRollingLogger::new(
-            level,
-            log_config.clone(),
-            advanced_config.logging.file.clone(),
-            probe_root,
-            external_callback,
-        ) {
-            Ok(logger) => shared_loggers.push(logger),
-            Err(e) => {
-                let err_msg = format!("Failed to initialize file logger: {e}");
-                if let Some(cb) = external_callback {
-                    if let Ok(c_str) = std::ffi::CString::new(err_msg) {
-                        unsafe {
-                            (cb)(c_str.as_ptr());
-                        }
-                    }
+            match Editor::with_config(rl_config) {
+                Ok(mut rl) => {
+                    rl.set_helper(Some(helper));
+                    (Box::new(std::io::stdout()), Some(rl))
                 }
-            }
-        }
-    }
-
-    // Callback Logger (For UWP Console)
-    if let Some(cb) = external_callback {
-        shared_loggers.push(CallbackLogger::new(level, log_config.clone(), cb));
-    }
-
-    #[cfg(feature = "console")]
-    let (console_logger, rl): (Box<dyn SharedLogger>, Option<Readline>) =
-        if advanced_config.commands.use_tty && std::io::stdin().is_terminal() {
-            match Readline::new("$ ".to_owned()) {
-                Ok((rl, stdout)) => (
-                    simplelog::WriteLogger::new(level, log_config, stdout),
-                    Some(rl),
-                ),
                 Err(e) => {
-                    log::warn!(
+                    eprintln!(
                         "Failed to initialize console input ({e}); falling back to simple logger"
                     );
-                    (simplelog::SimpleLogger::new(level, log_config), None)
+                    (Box::new(std::io::stdout()), None)
                 }
             }
         } else {
-            (simplelog::SimpleLogger::new(level, log_config), None)
+            (Box::new(std::io::stdout()), None)
         };
 
-    #[cfg(not(feature = "console"))]
-    let (console_logger, rl): (Box<dyn SharedLogger>, Option<()>) =
-        (simplelog::SimpleLogger::new(level, log_config), None);
+        let fmt_layer = fmt::layer()
+            .with_writer(std::sync::Mutex::new(logger))
+            .with_ansi(advanced_config.logging.color)
+            .with_ansi_sanitization(false)
+            .with_target(true)
+            .with_thread_names(advanced_config.logging.threads)
+            .with_thread_ids(advanced_config.logging.threads);
 
-    shared_loggers.push(console_logger);
+        if advanced_config.logging.timestamp {
+            let local_offset =
+                time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC);
+            let fmt_layer = fmt_layer.with_timer(fmt::time::OffsetTime::new(
+                local_offset,
+                time::macros::format_description!("[year]-[month]-[day] [hour]:[minute]:[second]"),
+            ));
+            let registry = tracing_subscriber::registry()
+                .with(env_filter)
+                .with(fmt_layer);
+            match (file_logger, external_callback) {
+                (Some(file_logger), Some(callback)) => {
+                    registry
+                        .with(file_logger)
+                        .with(crate::logging::CallbackLogger::new(callback))
+                        .init();
+                }
+                (Some(file_logger), None) => {
+                    registry.with(file_logger).init();
+                }
+                (None, Some(callback)) => {
+                    registry
+                        .with(crate::logging::CallbackLogger::new(callback))
+                        .init();
+                }
+                (None, None) => {
+                    registry.init();
+                }
+            }
+        } else {
+            let fmt_layer = fmt_layer.without_time();
+            let registry = tracing_subscriber::registry()
+                .with(env_filter)
+                .with(fmt_layer);
+            match (file_logger, external_callback) {
+                (Some(file_logger), Some(callback)) => {
+                    registry
+                        .with(file_logger)
+                        .with(crate::logging::CallbackLogger::new(callback))
+                        .init();
+                }
+                (Some(file_logger), None) => {
+                    registry.with(file_logger).init();
+                }
+                (None, Some(callback)) => {
+                    registry
+                        .with(crate::logging::CallbackLogger::new(callback))
+                        .init();
+                }
+                (None, None) => {
+                    registry.init();
+                }
+            }
+        }
 
-    let combined_boxed = CombinedLogger::new(shared_loggers);
-    let _ = log::set_boxed_logger(combined_boxed);
-    log::set_max_level(level);
+        let logging_config = LoggingConfig {
+            color: advanced_config.logging.color,
+            threads: advanced_config.logging.threads,
+            timestamp: advanced_config.logging.timestamp,
+        };
 
-    let wrapper = ReadlineLogWrapper::new_ffi_compatible(rl);
+        (ReadlineLogWrapper::new(rl), level, logging_config)
+    });
 
-    if LOGGER_IMPL.set(Some((wrapper, level))).is_err() {
-        log::warn!("Logger was already initialized!");
-    }
+    assert!(
+        LOGGER_IMPL.set(logger).is_ok(),
+        "Failed to set logger. already initialized"
+    );
 }
 
 pub static SHOULD_STOP: AtomicBool = AtomicBool::new(false);
-pub static STOP_INTERRUPT: LazyLock<Notify> = LazyLock::new(Notify::new);
+pub static STOP_INTERRUPT: LazyLock<CancellationToken> = LazyLock::new(CancellationToken::new);
 
 pub fn stop_server() {
     SHOULD_STOP.store(true, Ordering::Relaxed);
-    STOP_INTERRUPT.notify_waiters();
+    STOP_INTERRUPT.cancel();
 }
 
 fn resolve_some<T: Future, D, F: FnOnce(D) -> T>(
@@ -189,10 +217,10 @@ fn resolve_some<T: Future, D, F: FnOnce(D) -> T>(
     func: F,
 ) -> futures::future::Either<T, std::future::Pending<T::Output>> {
     use futures::future::Either;
-    match opt {
-        Some(val) => Either::Left(func(val)),
-        None => Either::Right(std::future::pending()),
-    }
+    opt.map_or_else(
+        || Either::Right(std::future::pending()),
+        |val| Either::Left(func(val)),
+    )
 }
 
 pub struct PumpkinServer {
@@ -202,36 +230,36 @@ pub struct PumpkinServer {
 }
 
 impl PumpkinServer {
+    pub fn log_info(&self, message: &str) {
+        tracing::info!(target: "plugin", "{}", message);
+    }
     pub async fn new(
         basic_config: BasicConfiguration,
         advanced_config: AdvancedConfiguration,
-        probe_root: &std::path::Path,
+        config_dir: &std::path::Path,
+        vanilla_data: VanillaData,
     ) -> Self {
-        let server = Server::new(basic_config, advanced_config, probe_root).await;
+        let server = Server::new(basic_config, advanced_config, config_dir, vanilla_data).await;
 
         let rcon = server.advanced_config.networking.rcon.clone();
 
-        let mut ticker = Ticker::new();
-
-        if server.advanced_config.commands.use_console {
-            #[cfg(feature = "console")]
-            {
-                if let Some((wrapper, _)) = LOGGER_IMPL.wait() {
-                    if let Some(rl) = wrapper.take_readline() {
-                        setup_console(rl, server.clone());
-                    } else {
-                        setup_stdin_console(server.clone()).await;
-                    }
+        if server.advanced_config.commands.use_console
+            && let Some((wrapper, _, _)) = LOGGER_IMPL.wait()
+        {
+            if let Some(rl) = wrapper.take_readline() {
+                setup_console(rl, server.clone());
+            } else {
+                if server.advanced_config.commands.use_tty {
+                    warn!(
+                        "The input is not a TTY; falling back to simple logger and ignoring `use_tty` setting"
+                    );
                 }
-            }
-            #[cfg(not(feature = "console"))]
-            {
-                setup_stdin_console(server.clone()).await;
+                setup_stdin_console(server.clone());
             }
         }
 
         if rcon.enabled {
-            log::warn!(
+            warn!(
                 "RCON is enabled, but it's highly insecure as it transmits passwords and commands in plain text. This makes it vulnerable to interception and exploitation by anyone on the network"
             );
             let rcon_server = server.clone();
@@ -240,20 +268,39 @@ impl PumpkinServer {
             });
         }
 
-        let mut tcp_listener = None;
-
-        if server.basic_config.java_edition {
+        let tcp_listener = if server.basic_config.java_edition {
+            let address = server.basic_config.java_edition_address;
             // Setup the TCP server socket.
-            let listener = tokio::net::TcpListener::bind(server.basic_config.java_edition_address)
-                .await
-                .expect("Failed to start `TcpListener`");
+            let listener = match TcpListener::bind(address).await {
+                Ok(l) => l,
+                Err(e) => match e.kind() {
+                    ErrorKind::AddrInUse => {
+                        error!("Error: Address {address} is already in use.");
+                        error!("Make sure another instance of the server isn't already running");
+                        std::process::exit(1);
+                    }
+                    ErrorKind::PermissionDenied => {
+                        error!("Error: Permission denied when binding to {address}.");
+                        error!("You might need sudo/admin privileges to use ports below 1024");
+                        std::process::exit(1);
+                    }
+                    ErrorKind::AddrNotAvailable => {
+                        error!("Error: The address {address} is not available on this machine");
+                        std::process::exit(1);
+                    }
+                    _ => {
+                        error!("Failed to start TcpListener on {address}: {e}");
+                        std::process::exit(1);
+                    }
+                },
+            };
             // In the event the user puts 0 for their port, this will allow us to know what port it is running on
             let addr = listener
                 .local_addr()
                 .expect("Unable to get the address of the server!");
 
             if server.advanced_config.networking.query.enabled {
-                log::info!("Query protocol is enabled. Starting...");
+                info!("Query protocol is enabled. Starting...");
                 server.spawn_task(query::start_query_handler(
                     server.clone(),
                     server.advanced_config.networking.query.address,
@@ -261,7 +308,7 @@ impl PumpkinServer {
             }
 
             if server.advanced_config.networking.lan_broadcast.enabled {
-                log::info!("LAN broadcast is enabled. Starting...");
+                info!("LAN broadcast is enabled. Starting...");
 
                 let lan_broadcast = LANBroadcast::new(
                     &server.advanced_config.networking.lan_broadcast,
@@ -270,54 +317,55 @@ impl PumpkinServer {
                 server.spawn_task(lan_broadcast.start(addr));
             }
 
-            tcp_listener = Some(listener);
-        }
-
-        if server.basic_config.allow_chat_reports {
-            let mojang_public_keys =
-                fetch_mojang_public_keys(&server.advanced_config.networking.authentication)
-                    .unwrap();
-            *server.mojang_public_keys.lock().await = mojang_public_keys;
-        }
+            Some(listener)
+        } else {
+            None
+        };
 
         // Ticker
         {
             let ticker_server = server.clone();
             server.spawn_task(async move {
-                ticker.run(&ticker_server).await;
+                Ticker::run(&ticker_server).await;
             });
         };
 
-        let mut udp_socket = None;
-
-        if server.basic_config.bedrock_edition {
-            udp_socket = Some(Arc::new(
+        let udp_socket = if server.basic_config.bedrock_edition {
+            Some(Arc::new(
                 UdpSocket::bind(server.basic_config.bedrock_edition_address)
                     .await
                     .expect("Failed to bind UDP Socket"),
-            ));
-        }
+            ))
+        } else {
+            None
+        };
 
         Self {
-            server: server.clone(),
+            server,
             tcp_listener,
             udp_socket,
         }
     }
 
     pub async fn init_plugins(&self) {
-        PLUGIN_MANAGER.set_self_ref(PLUGIN_MANAGER.clone()).await;
-        PLUGIN_MANAGER.set_server(self.server.clone()).await;
-        if let Err(err) = PLUGIN_MANAGER.load_plugins().await {
-            log::error!("{err}");
-        };
+        self.server
+            .plugin_manager
+            .set_self_ref(self.server.plugin_manager.clone())
+            .await;
+        self.server
+            .plugin_manager
+            .set_server(self.server.clone())
+            .await;
+        if let Err(err) = self.server.plugin_manager.load_plugins().await {
+            error!("{err}");
+        }
     }
 
     pub async fn unload_plugins(&self) {
-        if let Err(err) = PLUGIN_MANAGER.unload_all_plugins().await {
-            log::error!("Error unloading plugins: {err}");
+        if let Err(err) = self.server.plugin_manager.unload_all_plugins().await {
+            error!("Error unloading plugins: {err}");
         } else {
-            log::info!("All plugins unloaded successfully");
+            info!("All plugins unloaded successfully");
         }
     }
 
@@ -335,7 +383,7 @@ impl PumpkinServer {
             }
         }
 
-        log::info!("Stopped accepting incoming connections");
+        info!("Stopped accepting incoming connections");
 
         if let Err(e) = self
             .server
@@ -343,38 +391,37 @@ impl PumpkinServer {
             .save_all_players(&self.server)
             .await
         {
-            log::error!("Error saving all players during shutdown: {e}");
+            error!("Error saving all players during shutdown: {e}");
         }
 
         let kick_message = TextComponent::text("Server stopped");
-        for player in self.server.get_all_players().await {
+        for player in self.server.get_all_players() {
             player
                 .kick(DisconnectReason::Shutdown, kick_message.clone())
                 .await;
         }
 
-        log::info!("Ending player tasks");
+        info!("Ending player tasks");
 
         tasks.close();
         tasks.wait().await;
 
         self.unload_plugins().await;
 
-        log::info!("Starting save.");
+        info!("Starting save.");
 
         self.server.shutdown().await;
 
-        log::info!("Completed save!");
+        info!("Completed save!");
 
-        // Explicitly drop the line reader to return the terminal to the original state.
-        #[cfg(feature = "console")]
-        if let Some((wrapper, _)) = LOGGER_IMPL.wait()
+        if let Some((wrapper, _, _)) = LOGGER_IMPL.wait()
             && let Some(rl) = wrapper.take_readline()
         {
             let _ = rl;
         }
     }
 
+    #[expect(clippy::too_many_lines)]
     pub async fn unified_listener_task(
         &self,
         master_client_id_counter: &mut u64,
@@ -385,11 +432,11 @@ impl PumpkinServer {
 
         select! {
             // Branch for TCP connections (Java Edition)
-            tcp_result = resolve_some(self.tcp_listener.as_ref(), |listener| listener.accept()) => {
+            tcp_result = resolve_some(self.tcp_listener.as_ref(), tokio::net::TcpListener::accept) => {
                 match tcp_result {
                     Ok((connection, client_addr)) => {
                         if let Err(e) = connection.set_nodelay(true) {
-                            log::warn!("Failed to set TCP_NODELAY: {e}");
+                            warn!("Failed to set TCP_NODELAY: {e}");
                         }
 
                         let client_id = *master_client_id_counter;
@@ -400,39 +447,47 @@ impl PumpkinServer {
                         } else {
                             format!("{client_addr}")
                         };
-                        log::debug!("Accepted connection from Java Edition: {formatted_address} (id {client_id})");
-
-                        let mut java_client = JavaClient::new(connection, client_addr, client_id);
-                        java_client.start_outgoing_packet_task();
-                        let java_client = Arc::new(java_client);
-
+                        debug!("Accepted connection from Java Edition: {formatted_address} (id {client_id})");
                         let server_clone = self.server.clone();
 
                         tasks.spawn(async move {
-                            java_client.process_packets(&server_clone).await;
-                            java_client.close();
-                            java_client.await_tasks().await;
+                            let mut java_client = JavaClient::new(connection, client_addr, client_id);
+                            java_client.start_outgoing_packet_task();
+                            let login_result = java_client.handle_login_sequence(&server_clone).await;
 
-                            let player = java_client.player.lock().await;
-                            if let Some(player) = player.as_ref() {
-                                log::debug!("Cleaning up player for id {client_id}");
-
-                                if let Err(e) = server_clone.player_data_storage
-                                        .handle_player_leave(player)
-                                        .await
+                            match login_result {
+                                PacketHandlerResult::Stop => {
+                                     java_client.close();
+                                     java_client.await_tasks().await;
+                                },
+                                PacketHandlerResult::ReadyToPlay(profile,config) => {
+                                     if let Some((player, world)) = server_clone
+                                     .add_player(ClientPlatform::Java(java_client), profile, Some(config))
+                                          .await
                                 {
-                                    log::error!("Failed to save player data on disconnect: {e}");
-                                }
-
-                                player.remove().await;
-                                server_clone.remove_player(player).await;
-                            } else if java_client.connection_state.load() == Play {
-                                log::error!("No player found for id {client_id}. This should not happen!");
+                                    world
+                                        .spawn_java_player(&server_clone.basic_config, &player, &server_clone)
+                                        .await;
+                                    if let ClientPlatform::Java(client) = &player.client {
+                                        client.progress_player_packets(&player, &server_clone).await;
+                                        // Close when done
+                                        client.close();
+                                        client.await_tasks().await;
+                                    }
+                                    player.remove().await;
+                                    server_clone.remove_player(&player).await;
+                                    if let Err(e) = server_clone.player_data_storage
+                                        .handle_player_leave(&player)
+                                        .await {
+                                            error!("Failed to save player data on disconnect: {e}");
+                                        }
+                                    }
+                                },
                             }
                         });
                     }
                     Err(e) => {
-                        log::error!("Failed to accept Java client connection: {e}");
+                        error!("Failed to accept Java client connection: {e}");
                         sleep(Duration::from_millis(50)).await;
                     }
                 }
@@ -443,7 +498,7 @@ impl PumpkinServer {
                 match udp_result {
                     Ok((len, client_addr)) => {
                         if len == 0 {
-                            log::warn!("Received empty UDP packet from {client_addr}");
+                            warn!("Received empty UDP packet from {client_addr}");
                         } else {
                             let id = udp_buf[0];
                             let is_online = id & 128 != 0;
@@ -483,13 +538,13 @@ impl PumpkinServer {
                     }
                     // Since all packets go over this match statement, there should be not waiting
                     Err(e) => {
-                        log::error!("{e}");
+                        error!("{e}");
                     }
                 }
             },
 
             // Branch for the global stop signal
-            () = STOP_INTERRUPT.notified() => {
+            () = STOP_INTERRUPT.cancelled() => {
                 return false;
             }
         }
@@ -497,7 +552,7 @@ impl PumpkinServer {
     }
 }
 
-async fn setup_stdin_console(server: Arc<Server>) {
+fn setup_stdin_console(server: Arc<Server>) {
     let (tx, mut rx) = tokio::sync::mpsc::channel(1);
     let rt = tokio::runtime::Handle::current();
     std::thread::spawn(move || {
@@ -510,9 +565,9 @@ async fn setup_stdin_console(server: Arc<Server>) {
                 }
             } else {
                 break;
-            };
+            }
             if line.is_empty() || line.as_bytes()[line.len() - 1] != b'\n' {
-                log::warn!("Console command was not terminated with a newline");
+                warn!("Console command was not terminated with a newline");
             }
             rt.block_on(tx.send(line.trim().to_string()))
                 .expect("Failed to send command to server");
@@ -522,12 +577,12 @@ async fn setup_stdin_console(server: Arc<Server>) {
         while !SHOULD_STOP.load(Ordering::Relaxed) {
             if let Some(command) = rx.recv().await {
                 send_cancellable! {{
+                    &server;
                     ServerCommandEvent::new(command.clone());
 
                     'after: {
-                        let dispatcher = &server.command_dispatcher.read().await;
-                        dispatcher
-                            .handle_command(&command::CommandSender::Console, &server, command.as_str())
+                        server.command_dispatcher.read().await
+                            .handle_command(&command::CommandSender::Console.into_source(&server).await, command.as_str())
                             .await;
                     };
                 }}
@@ -536,53 +591,74 @@ async fn setup_stdin_console(server: Arc<Server>) {
     });
 }
 
-#[cfg(feature = "console")]
-fn setup_console(rl: Readline, server: Arc<Server>) {
-    // This needs to be async, or it will hog a thread.
-    server.clone().spawn_task(async move {
-        let mut rl = rl;
+fn setup_console(mut rl: Editor<PumpkinCommandCompleter, FileHistory>, server: Arc<Server>) {
+    let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+
+    if let Some(helper) = rl.helper_mut() {
+        if let Ok(mut server_lock) = helper.server.write() {
+            *server_lock = Some(server.clone());
+        }
+        let _ = helper.rt.set(tokio::runtime::Handle::current());
+    }
+
+    std::thread::spawn(move || {
         while !SHOULD_STOP.load(Ordering::Relaxed) {
-            let t1 = rl.readline();
-            let t2 = STOP_INTERRUPT.notified();
-
-            let result = select! {
-                line = t1 => Some(line),
-                () = t2 => None,
-            };
-
-            let Some(result) = result else { break };
-
-            match result {
-                Ok(ReadlineEvent::Line(line)) => {
-                    send_cancellable! {{
-                        ServerCommandEvent::new(line.clone());
-
-                        'after: {
-                            let dispatcher = server.command_dispatcher.read().await;
-
-                            dispatcher
-                                .handle_command(&command::CommandSender::Console, &server, &line)
-                                .await;
-                            rl.add_history_entry(line).unwrap();
-                        }
-                    }}
+            let readline = rl.readline("$ ");
+            match readline {
+                Ok(line) => {
+                    let _ = rl.add_history_entry(line.clone());
+                    if tx.blocking_send(line).is_err() {
+                        break;
+                    }
                 }
-                Ok(ReadlineEvent::Interrupted) => {
+                Err(ReadlineError::Interrupted) => {
+                    info!("CTRL-C");
                     stop_server();
                     break;
                 }
-                err => {
-                    log::error!("Console command loop failed!");
-                    log::error!("{err:?}");
+                Err(ReadlineError::Eof) => {
+                    info!("CTRL-D");
+                    stop_server();
+                    break;
+                }
+                Err(err) => {
+                    error!("Error reading console input: {err}");
                     break;
                 }
             }
         }
-        if let Some((wrapper, _)) = LOGGER_IMPL.wait() {
+        if let Some((wrapper, _, _)) = LOGGER_IMPL.wait() {
             wrapper.return_readline(rl);
         }
+    });
 
-        log::debug!("Stopped console commands task");
+    server.clone().spawn_task(async move {
+        while !SHOULD_STOP.load(Ordering::Relaxed) {
+            let t1 = rx.recv();
+            let t2 = STOP_INTERRUPT.cancelled();
+
+            let result = select! {
+                line = t1 => line,
+                () = t2 => None,
+            };
+
+            if let Some(line) = result {
+                send_cancellable! {{
+                    &server;
+                    ServerCommandEvent::new(line.clone());
+
+                    'after: {
+                        server.command_dispatcher.read().await
+                            .handle_command(&command::CommandSender::Console.into_source(&server).await, &line)
+                            .await;
+                    }
+                }}
+            } else {
+                break;
+            }
+        }
+        drop(rx);
+        debug!("Stopped console commands task");
     });
 }
 

@@ -1,14 +1,13 @@
 use pumpkin_data::BlockState;
-use pumpkin_util::{math::square, random::RandomGenerator};
-use serde::Deserialize;
+use pumpkin_util::math::square_f32;
+use pumpkin_util::random::RandomGenerator;
 
 use super::{FoliagePlacer, LeaveValidator};
 use crate::generation::feature::features::tree::TreeNode;
 use crate::generation::proto_chunk::GenerationCache;
 
-#[derive(Deserialize)]
 pub struct LargeOakFoliagePlacer {
-    height: i32,
+    pub height: i32,
 }
 
 impl LargeOakFoliagePlacer {
@@ -24,12 +23,7 @@ impl LargeOakFoliagePlacer {
         foliage_provider: &BlockState,
     ) {
         for y in (offset - foliage_height..=offset).rev() {
-            let radius = radius
-                + if y == offset || y == offset - foliage_height {
-                    0
-                } else {
-                    1
-                };
+            let radius = radius + i32::from(!(y == offset || y == offset - foliage_height));
             FoliagePlacer::generate_square(
                 self,
                 chunk,
@@ -43,7 +37,7 @@ impl LargeOakFoliagePlacer {
         }
     }
 
-    pub fn get_random_height(&self, _random: &mut RandomGenerator) -> i32 {
+    pub const fn get_random_height(&self, _random: &mut RandomGenerator) -> i32 {
         self.height
     }
 }
@@ -58,6 +52,6 @@ impl LeaveValidator for LargeOakFoliagePlacer {
         radius: i32,
         _giant_trunk: bool,
     ) -> bool {
-        square(dx as f32 + 0.5) + square(dz as f32 + 0.5) > (radius * radius) as f32
+        square_f32(dx as f32 + 0.5) + square_f32(dz as f32 + 0.5) > (radius * radius) as f32
     }
 }

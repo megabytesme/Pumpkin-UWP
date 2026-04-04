@@ -4,9 +4,9 @@ use crate::block::{BlockBehaviour, BlockFuture, NormalUseArgs, OnNeighborUpdateA
 use crate::entity::player::Player;
 use crate::world::World;
 use pumpkin_data::BlockDirection;
-use pumpkin_data::block_properties::{BlockHalf, BlockProperties};
+use pumpkin_data::block_properties::{BlockProperties, Half};
 use pumpkin_data::sound::{Sound, SoundCategory};
-use pumpkin_data::tag::{RegistryKey, Taggable, get_tag_values};
+use pumpkin_data::tag::Taggable;
 use pumpkin_data::{Block, tag};
 use pumpkin_macros::pumpkin_block_from_tag;
 use pumpkin_util::math::position::BlockPos;
@@ -46,7 +46,6 @@ fn can_open_trapdoor(block: &Block) -> bool {
     true
 }
 
-// Todo: The sounds should be from BlockSetType
 fn get_sound(block: &Block, open: bool) -> Sound {
     if open {
         if block.has_tag(&tag::Block::MINECRAFT_WOODEN_TRAPDOORS) {
@@ -87,22 +86,26 @@ impl BlockBehaviour for TrapDoorBlock {
             trapdoor_props.waterlogged = args.replacing.water_source();
 
             let powered = block_receives_redstone_power(args.world, args.position).await;
-            let direction = args
-                .player
-                .living_entity
-                .entity
-                .get_horizontal_facing()
-                .opposite();
 
-            trapdoor_props.facing = direction;
+            let player_facing = args.player.living_entity.entity.get_horizontal_facing();
+
+            // Correct facing logic using Option unwrap
+            let facing = args
+                .direction
+                .to_horizontal_facing()
+                .unwrap_or(player_facing);
+
+            trapdoor_props.facing = facing;
+
             trapdoor_props.half = match args.direction {
-                BlockDirection::Up => BlockHalf::Top,
-                BlockDirection::Down => BlockHalf::Bottom,
+                BlockDirection::Up => Half::Top,
+                BlockDirection::Down => Half::Bottom,
                 _ => match args.use_item_on.cursor_pos.y {
-                    0.0..0.5 => BlockHalf::Bottom,
-                    _ => BlockHalf::Top,
+                    0.0..0.5 => Half::Bottom,
+                    _ => Half::Top,
                 },
             };
+
             trapdoor_props.powered = powered;
             trapdoor_props.open = powered;
 
@@ -115,6 +118,7 @@ impl BlockBehaviour for TrapDoorBlock {
             let block_state = args.world.get_block_state(args.position).await;
             let mut trapdoor_props = TrapDoorProperties::from_state_id(block_state.id, args.block);
             let powered = block_receives_redstone_power(args.world, args.position).await;
+
             if powered != trapdoor_props.powered {
                 trapdoor_props.powered = !trapdoor_props.powered;
 

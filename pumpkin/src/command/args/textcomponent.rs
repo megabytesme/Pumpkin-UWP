@@ -5,6 +5,7 @@ use crate::command::tree::RawArgs;
 use crate::server::Server;
 use pumpkin_protocol::java::client::play::{ArgumentType, SuggestionProviders};
 use pumpkin_util::text::TextComponent;
+use tracing::debug;
 
 pub struct TextComponentArgConsumer;
 
@@ -25,7 +26,7 @@ impl ArgumentConsumer for TextComponentArgConsumer {
         _server: &'a Server,
         args: &'b mut RawArgs<'a>,
     ) -> ConsumeResult<'a> {
-        let s_opt: Option<&'a str> = args.pop();
+        let s_opt: Option<&'a str> = args.pop().map(|arg| arg.value);
 
         let Some(s) = s_opt else {
             return Box::pin(async move { None });
@@ -33,6 +34,7 @@ impl ArgumentConsumer for TextComponentArgConsumer {
 
         let text_component_opt = parse_text_component(s);
 
+        // TODO: Allow identifiers (starting with alphabetic or _, then alphanumeric+-_.) as display names
         let final_arg: Option<Arg<'a>> = text_component_opt.map_or_else(
             || {
                 (s.starts_with('"') && s.ends_with('"')).then(|| {
@@ -61,7 +63,7 @@ impl FindArg<'_> for TextComponentArgConsumer {
 fn parse_text_component(input: &str) -> Option<TextComponent> {
     let result = serde_json::from_str(input);
     if let Err(e) = result {
-        log::debug!("Failed to parse text component: {e}");
+        debug!("Failed to parse text component: {e}");
         None
     } else {
         result.unwrap()

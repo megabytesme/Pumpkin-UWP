@@ -6,8 +6,9 @@ use crate::world::World;
 use pumpkin_data::Block;
 use pumpkin_data::BlockDirection;
 use pumpkin_data::item::Item;
+use pumpkin_data::item_stack::ItemStack;
 use pumpkin_util::math::position::BlockPos;
-use pumpkin_world::item::ItemStack;
+use pumpkin_util::math::vector3::Vector3;
 use pumpkin_world::world::BlockFlags;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -25,15 +26,16 @@ impl ItemMetadata for FlintAndSteelItem {
 impl ItemBehaviour for FlintAndSteelItem {
     fn use_on_block<'a>(
         &'a self,
-        _item: &'a mut ItemStack,
+        item: &'a mut ItemStack,
         player: &'a Player,
         location: BlockPos,
         face: BlockDirection,
+        _cursor_pos: Vector3<f32>,
         block: &'a Block,
         _server: &'a Server,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         Box::pin(async move {
-            Ignition::ignite_block(
+            let ignited = Ignition::ignite_block(
                 |world: Arc<World>, pos: BlockPos, new_state_id: u16| async move {
                     world
                         .set_block_state(&pos, new_state_id, BlockFlags::NOTIFY_ALL)
@@ -45,6 +47,11 @@ impl ItemBehaviour for FlintAndSteelItem {
                 block,
             )
             .await;
+
+            if ignited && player.gamemode.load() != pumpkin_util::GameMode::Creative {
+                // TODO: Handle DamageResult::Broken to broadcast item break and update player slot.
+                let _ = item.damage_item(1);
+            }
         })
     }
 

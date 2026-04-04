@@ -1,27 +1,23 @@
 use core::f32;
-use std::collections::HashSet;
 
 use pumpkin_data::{BlockDirection, BlockState};
 use pumpkin_util::{
     math::{lerp, position::BlockPos, vector3::Vector3},
     random::{RandomGenerator, RandomImpl},
 };
-use serde::Deserialize;
 
-use crate::generation::proto_chunk::GenerationCache;
-use crate::{block::BlockStateCodec, generation::rule::RuleTest, world::BlockRegistryExt};
+use crate::{block::RawBlockState, generation::proto_chunk::GenerationCache};
+use crate::{generation::rule::RuleTest, world::BlockRegistryExt};
 
-#[derive(Deserialize)]
 pub struct OreFeature {
-    size: i32,
-    discard_chance_on_air_exposure: f32,
-    targets: Vec<OreTarget>,
+    pub size: i32,
+    pub discard_chance_on_air_exposure: f32,
+    pub targets: Vec<OreTarget>,
 }
 
-#[derive(Deserialize)]
-struct OreTarget {
+pub struct OreTarget {
     pub target: RuleTest,
-    pub state: BlockStateCodec,
+    pub state: &'static BlockState,
 }
 
 impl OreFeature {
@@ -38,7 +34,7 @@ impl OreFeature {
     ) -> bool {
         let f = random.next_f32() * f32::consts::PI;
         let g = self.size as f32 / 8.0f32;
-        let i = ((self.size as f32 / 16.0f32 * 2.0 + 1.0) / 2.0).ceil() as i32;
+        let i = f32::midpoint(self.size as f32 / 16.0f32 * 2.0, 1.0).ceil() as i32;
 
         let d = pos.0.x as f64 + f.sin() as f64 * g as f64;
         let e = pos.0.x as f64 - f.sin() as f64 * g as f64;
@@ -84,7 +80,8 @@ impl OreFeature {
         vertical_size: i32,
     ) -> bool {
         let mut placed_blocks_count = 0;
-        let mut bit_set = HashSet::new();
+        let bitset_size = (horizontal_size * vertical_size * horizontal_size) as usize;
+        let mut bit_set = vec![false; bitset_size];
         let mut mutable_pos = BlockPos::ZERO;
         let j = self.size;
         let mut ds = vec![0.0; (j * 4) as usize];
@@ -94,7 +91,7 @@ impl OreFeature {
             let e = lerp(f as f64, start_y, end_y);
             let g = lerp(f as f64, start_z, end_z);
             let h = random.next_f64() * j as f64 / 16.0;
-            let l = (((f32::consts::PI * f).sin() + 1.0) * h as f32 + 1.0) / 2.0;
+            let l = f32::midpoint(((f32::consts::PI * f).sin() + 1.0) * h as f32, 1.0);
 
             ds[k as usize * 4] = d;
             ds[k as usize * 4 + 1] = e;
@@ -151,6 +148,8 @@ impl OreFeature {
                     if u_val * u_val + w_val * w_val >= 1.0 {
                         continue;
                     }
+                    let base_idx = (t_val - x_bound) + (v_val - y_bound) * horizontal_size;
+
                     for aa_val in p_bound..=s_bound {
                         let ab_val = (aa_val as f64 + 0.5 - h_val) / d_val;
                         if u_val * u_val + w_val * w_val + ab_val * ab_val >= 1.0 {
@@ -160,14 +159,13 @@ impl OreFeature {
                             continue;
                         }
 
-                        let ac = (t_val - x_bound)
-                            + (v_val - y_bound) * horizontal_size
-                            + (aa_val - z_bound) * horizontal_size * vertical_size;
+                        let ac = (base_idx + (aa_val - z_bound) * horizontal_size * vertical_size)
+                            as usize;
 
-                        if bit_set.contains(&ac) {
+                        if bit_set[ac] {
                             continue;
                         }
-                        bit_set.insert(ac);
+                        bit_set[ac] = true;
 
                         mutable_pos.0.x = t_val;
                         mutable_pos.0.y = v_val;
@@ -177,25 +175,17 @@ impl OreFeature {
                         //     continue;
                         // }
 
-                        let ad = t_val;
-                        let ae = v_val;
-                        let af = aa_val;
+                        // let ad = t_val;
+                        // let ae = v_val;
+                        // let af = aa_val;
+                        // TODO: using a section would be faster
 
-                        let block_state =
-                            GenerationCache::get_block_state(chunk, &Vector3::new(ad, ae, af));
+                        let pos_vec = Vector3::new(t_val, v_val, aa_val);
+                        let block_state = GenerationCache::get_block_state(chunk, &pos_vec);
 
                         for target in &self.targets {
-                            if self.should_place(
-                                chunk,
-                                block_state.to_state(),
-                                random,
-                                target,
-                                &mut mutable_pos,
-                            ) {
-                                chunk.set_block_state(
-                                    &Vector3::new(ad, ae, af),
-                                    target.state.get_state(),
-                                );
+                            if self.should_place(chunk, block_state, random, target, &mutable_pos) {
+                                chunk.set_block_state(&pos_vec, target.state);
                                 placed_blocks_count += 1;
                                 break; // Equivalent to 'continue block11;'
                             }
@@ -209,11 +199,11 @@ impl OreFeature {
 
     fn should_place<T: GenerationCache>(
         &self,
-        chunk: &mut T,
-        state: &'static BlockState,
+        chunk: &T,
+        state: RawBlockState,
         random: &mut RandomGenerator,
         target: &OreTarget,
-        pos: &mut BlockPos,
+        pos: &BlockPos,
     ) -> bool {
         if !target.target.test(state, random) {
             return false;
@@ -234,7 +224,7 @@ impl OreFeature {
         random.next_f32() >= chance
     }
 
-    fn is_exposed_to_air<T: GenerationCache>(chunk: &mut T, pos: &BlockPos) -> bool {
+    fn is_exposed_to_air<T: GenerationCache>(chunk: &T, pos: &BlockPos) -> bool {
         for dir in BlockDirection::all() {
             if GenerationCache::get_block_state(chunk, &pos.offset(dir.to_offset()).0)
                 .to_state()

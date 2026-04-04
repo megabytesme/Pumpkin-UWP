@@ -1,5 +1,5 @@
-use pumpkin_data::tag;
 use pumpkin_data::tag::Taggable;
+use pumpkin_data::{Block, tag};
 use pumpkin_util::math::position::BlockPos;
 use pumpkin_world::{BlockStateId, world::BlockAccessor};
 
@@ -11,12 +11,8 @@ use crate::block::{
 pub struct MushroomPlantBlock;
 
 impl BlockMetadata for MushroomPlantBlock {
-    fn namespace(&self) -> &'static str {
-        "minecraft"
-    }
-
-    fn ids(&self) -> &'static [&'static str] {
-        &["brown_mushroom", "red_mushroom"]
+    fn ids() -> Box<[u16]> {
+        [Block::BROWN_MUSHROOM.id, Block::RED_MUSHROOM.id].into()
     }
 }
 
@@ -46,7 +42,7 @@ impl BlockBehaviour for MushroomPlantBlock {
 impl PlantBlockBase for MushroomPlantBlock {
     async fn can_plant_on_top(&self, block_accessor: &dyn BlockAccessor, pos: &BlockPos) -> bool {
         let block = block_accessor.get_block(pos).await;
-        block.has_tag(&tag::Block::MINECRAFT_MUSHROOM_GROW_BLOCK)
+        block.has_tag(&tag::Block::MINECRAFT_OVERRIDES_MUSHROOM_LIGHT_REQUIREMENT)
         // TODO: Check light level and isOpaqueFullCube
     }
 }

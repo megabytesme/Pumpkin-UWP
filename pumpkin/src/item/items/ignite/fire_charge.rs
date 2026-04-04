@@ -4,10 +4,11 @@ use std::sync::Arc;
 use pumpkin_data::Block;
 use pumpkin_data::BlockDirection;
 use pumpkin_data::item::Item;
+use pumpkin_data::item_stack::ItemStack;
 use pumpkin_data::sound::Sound;
 use pumpkin_data::sound::SoundCategory;
 use pumpkin_util::math::position::BlockPos;
-use pumpkin_world::item::ItemStack;
+use pumpkin_util::math::vector3::Vector3;
 use pumpkin_world::world::BlockFlags;
 
 use crate::entity::player::Player;
@@ -31,6 +32,7 @@ impl ItemBehaviour for FireChargeItem {
         player: &'a Player,
         location: BlockPos,
         face: BlockDirection,
+        _cursor_pos: Vector3<f32>,
         block: &'a Block,
         _server: &'a Server,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {

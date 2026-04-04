@@ -3,12 +3,14 @@ use pumpkin_data::{
     BlockDirection,
     block_properties::{BlockProperties, CandleLikeProperties, EnumVariants, Integer1To4},
     entity::EntityPose,
-    tag::{RegistryKey, get_tag_values},
 };
 use pumpkin_macros::pumpkin_block_from_tag;
+use pumpkin_util::math::position::BlockPos;
+use pumpkin_world::tick::TickPriority;
+use pumpkin_world::world::BlockAccessor;
 use pumpkin_world::{BlockStateId, world::BlockFlags};
 
-use crate::block::BlockFuture;
+use crate::block::{BlockFuture, GetStateForNeighborUpdateArgs, OnScheduledTickArgs};
 use crate::{
     block::{
         BlockIsReplacing,
@@ -54,14 +56,19 @@ impl BlockBehaviour for CandleBlock {
             let item_lock = args.item_stack.lock().await;
             let item = item_lock.item;
             drop(item_lock);
+
             match item.id {
                 id if (Item::CANDLE.id..=Item::BLACK_CANDLE.id).contains(&id)
                     && item.id == args.block.id =>
                 {
+                    let was_lit = properties.lit;
+
                     if properties.candles.to_index() < 3 {
                         properties.candles =
                             Integer1To4::from_index(properties.candles.to_index() + 1);
                     }
+
+                    properties.lit = was_lit;
 
                     args.world
                         .set_block_state(
@@ -70,6 +77,7 @@ impl BlockBehaviour for CandleBlock {
                             BlockFlags::NOTIFY_ALL,
                         )
                         .await;
+
                     BlockActionResult::Consume
                 }
                 _ => {
@@ -86,6 +94,7 @@ impl BlockBehaviour for CandleBlock {
                             BlockFlags::NOTIFY_ALL,
                         )
                         .await;
+
                     BlockActionResult::Consume
                 }
             }
@@ -114,13 +123,7 @@ impl BlockBehaviour for CandleBlock {
     }
 
     fn can_place_at<'a>(&'a self, args: CanPlaceAtArgs<'a>) -> BlockFuture<'a, bool> {
-        Box::pin(async move {
-            let (support_block, state) = args
-                .block_accessor
-                .get_block_and_state(&args.position.down())
-                .await;
-            !support_block.is_waterlogged(state.id) && state.is_center_solid(BlockDirection::Up)
-        })
+        Box::pin(async move { can_place_at(args.block_accessor, args.position).await })
     }
 
     fn can_update_at<'a>(&'a self, args: CanUpdateAtArgs<'a>) -> BlockFuture<'a, bool> {
@@ -129,7 +132,36 @@ impl BlockBehaviour for CandleBlock {
             args.player.get_entity().pose.load() != EntityPose::Crouching
                 && CandleLikeProperties::from_state_id(args.state_id, args.block).candles
                     != Integer1To4::L4
-                && args.block.id == b.id // only the same color can update
+                && args.block.id == b.id
         })
     }
+
+    fn on_scheduled_tick<'a>(&'a self, args: OnScheduledTickArgs<'a>) -> BlockFuture<'a, ()> {
+        Box::pin(async move {
+            if !can_place_at(args.world.as_ref(), args.position).await {
+                args.world
+                    .break_block(args.position, None, BlockFlags::empty())
+                    .await;
+            }
+        })
+    }
+
+    fn get_state_for_neighbor_update<'a>(
+        &'a self,
+        args: GetStateForNeighborUpdateArgs<'a>,
+    ) -> BlockFuture<'a, BlockStateId> {
+        Box::pin(async move {
+            if !can_place_at(args.world, args.position).await {
+                args.world
+                    .schedule_block_tick(args.block, *args.position, 1, TickPriority::Normal)
+                    .await;
+            }
+            args.state_id
+        })
+    }
+}
+
+async fn can_place_at(block_accessor: &dyn BlockAccessor, position: &BlockPos) -> bool {
+    let (support_block, state) = block_accessor.get_block_and_state(&position.down()).await;
+    !support_block.is_waterlogged(state.id) && state.is_center_solid(BlockDirection::Up)
 }

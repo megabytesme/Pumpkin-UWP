@@ -1,18 +1,29 @@
 use std::io::Write;
 
 use pumpkin_data::packet::clientbound::PLAY_COMMANDS;
-use pumpkin_macros::packet;
+use pumpkin_macros::java_packet;
+use pumpkin_util::version::MinecraftVersion;
 
 use crate::{ClientPacket, VarInt, WritingError, ser::NetworkWriteExt};
 
-#[packet(PLAY_COMMANDS)]
+/// Sends the entire command tree to the client for client-side parsing and tab-completion.
+///
+/// Minecraft uses the "Brigadier" command system. This packet informs the client
+/// which commands exist, their arguments, and how they branch, allowing the
+/// client to highlight syntax errors in red before the command is even sent.
+#[java_packet(PLAY_COMMANDS)]
 pub struct CCommands<'a> {
+    /// A flat list of all nodes in the command graph.
+    /// Nodes reference each other by their index in this array.
     pub nodes: Box<[ProtoNode<'a>]>,
+    /// The index of the "root" node in the `nodes` array.
+    /// This is the entry point for all commands (the '/' symbol).
     pub root_node_index: VarInt,
 }
 
 impl<'a> CCommands<'a> {
-    pub fn new(nodes: Box<[ProtoNode<'a>]>, root_node_index: VarInt) -> Self {
+    #[must_use]
+    pub const fn new(nodes: Box<[ProtoNode<'a>]>, root_node_index: VarInt) -> Self {
         Self {
             nodes,
             root_node_index,
@@ -21,10 +32,14 @@ impl<'a> CCommands<'a> {
 }
 
 impl ClientPacket for CCommands<'_> {
-    fn write_packet_data(&self, write: impl Write) -> Result<(), WritingError> {
+    fn write_packet_data(
+        &self,
+        write: impl Write,
+        version: &MinecraftVersion,
+    ) -> Result<(), WritingError> {
         let mut write = write;
         write.write_list(&self.nodes, |bytebuf, node: &ProtoNode| {
-            node.write_to(bytebuf)
+            node.write_to(bytebuf, version)
         })?;
         write.write_var_int(&self.root_node_index)
     }
@@ -41,12 +56,16 @@ pub enum ProtoNodeType<'a> {
     Literal {
         name: &'a str,
         is_executable: bool,
+        redirect_target: Option<i32>,
+        restricted: bool,
     },
     Argument {
         name: &'a str,
         is_executable: bool,
+        redirect_target: Option<i32>,
         parser: ArgumentType<'a>,
         override_suggestion_type: Option<SuggestionProviders>,
+        restricted: bool,
     },
 }
 
@@ -54,18 +73,34 @@ impl ProtoNode<'_> {
     const FLAG_IS_EXECUTABLE: u8 = 4;
     const FLAG_HAS_REDIRECT: u8 = 8;
     const FLAG_HAS_SUGGESTION_TYPE: u8 = 16;
+    const FLAG_IS_RESTRICTED: u8 = 32;
 
-    pub fn write_to(&self, write: &mut impl Write) -> Result<(), WritingError> {
+    pub fn write_to(
+        &self,
+        write: &mut impl Write,
+        version: &MinecraftVersion,
+    ) -> Result<(), WritingError> {
         // flags
+        let mut redirect_target_on_flag = 0i32;
+
         let flags = match self.node_type {
             ProtoNodeType::Root => 0,
             ProtoNodeType::Literal {
                 name: _,
                 is_executable,
+                redirect_target,
+                restricted,
             } => {
                 let mut n = 1;
+                if restricted {
+                    n |= Self::FLAG_IS_RESTRICTED;
+                }
                 if is_executable {
-                    n |= Self::FLAG_IS_EXECUTABLE
+                    n |= Self::FLAG_IS_EXECUTABLE;
+                }
+                if let Some(target) = redirect_target {
+                    n |= Self::FLAG_HAS_REDIRECT;
+                    redirect_target_on_flag = target;
                 }
                 n
             }
@@ -74,13 +109,22 @@ impl ProtoNode<'_> {
                 is_executable,
                 parser: _,
                 override_suggestion_type,
+                redirect_target,
+                restricted,
             } => {
                 let mut n = 2;
+                if restricted {
+                    n |= Self::FLAG_IS_RESTRICTED;
+                }
                 if override_suggestion_type.is_some() {
-                    n |= Self::FLAG_HAS_SUGGESTION_TYPE
+                    n |= Self::FLAG_HAS_SUGGESTION_TYPE;
                 }
                 if is_executable {
-                    n |= Self::FLAG_IS_EXECUTABLE
+                    n |= Self::FLAG_IS_EXECUTABLE;
+                }
+                if let Some(target) = redirect_target {
+                    n |= Self::FLAG_HAS_REDIRECT;
+                    redirect_target_on_flag = target;
                 }
                 n
             }
@@ -94,7 +138,7 @@ impl ProtoNode<'_> {
 
         // redirect node
         if flags & Self::FLAG_HAS_REDIRECT != 0 {
-            write.write_var_int(&1.into())?;
+            write.write_var_int(&redirect_target_on_flag.into())?;
         }
 
         // name
@@ -106,23 +150,15 @@ impl ProtoNode<'_> {
         }
 
         // parser id + properties
-        if let ProtoNodeType::Argument {
-            name: _,
-            is_executable: _,
-            parser,
-            override_suggestion_type: _,
-        } = &self.node_type
-        {
-            parser.write_to_buffer(write)?;
+        if let ProtoNodeType::Argument { parser, .. } = &self.node_type {
+            parser.write_to_buffer(write, version)?;
         }
 
         if flags & Self::FLAG_HAS_SUGGESTION_TYPE != 0 {
             match &self.node_type {
                 ProtoNodeType::Argument {
-                    name: _,
-                    is_executable: _,
-                    parser: _,
                     override_suggestion_type,
+                    ..
                 } => {
                     // suggestion type
                     let suggestion_type = &override_suggestion_type.expect("ProtoNode::FLAG_HAS_SUGGESTION_TYPE should only be set if override_suggestion_type is not `None`.");
@@ -205,10 +241,33 @@ impl ArgumentType<'_> {
 
     pub const SCORE_HOLDER_FLAG_ALLOW_MULTIPLE: u8 = 1;
 
-    pub fn write_to_buffer(&self, write: &mut impl Write) -> Result<(), WritingError> {
+    #[must_use]
+    pub fn to_id(&self, version: &MinecraftVersion) -> i32 {
         // Safety: Since Self is repr(u32), it is guaranteed to hold the discriminant in the first 4 bytes
         // See https://doc.rust-lang.org/reference/items/enumerations.html#pointer-casting
-        let id = unsafe { *(self as *const Self as *const i32) };
+        let mut id = unsafe { *std::ptr::from_ref::<Self>(self).cast::<i32>() };
+
+        if version < &MinecraftVersion::V_1_21_6 {
+            match id {
+                ..=16 => {}
+                // 17 => HexColor
+                18..=53 => id -= 1,
+                // 54 => Dialog
+                55.. => id -= 2,
+                _ => panic!("{self:?} does not exist in this Minecraft version (< 1.21.6)."),
+            }
+        }
+
+        id
+    }
+
+    #[expect(clippy::match_same_arms)]
+    pub fn write_to_buffer(
+        &self,
+        write: &mut impl Write,
+        version: &MinecraftVersion,
+    ) -> Result<(), WritingError> {
+        let id = self.to_id(version);
         write.write_var_int(&(id).into())?;
         match self {
             Self::Float { min, max } => Self::write_number_arg(*min, *max, write),
@@ -241,10 +300,10 @@ impl ArgumentType<'_> {
     ) -> Result<(), WritingError> {
         let mut flags: u8 = 0;
         if min.is_some() {
-            flags |= 1
+            flags |= 1;
         }
         if max.is_some() {
-            flags |= 2
+            flags |= 2;
         }
 
         write.write_u8(flags)?;
@@ -315,7 +374,7 @@ pub enum SuggestionProviders {
 }
 
 impl SuggestionProviders {
-    fn resource_location(&self) -> &'static str {
+    const fn resource_location(self) -> &'static str {
         match self {
             Self::AskServer => "minecraft:ask_server",
             Self::AllRecipes => "minecraft:all_recipes",

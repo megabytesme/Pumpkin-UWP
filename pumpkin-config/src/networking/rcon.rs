@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::net::{Ipv4Addr, SocketAddr};
 
+/// Configuration for the RCON (Remote Console) service.
+///
+/// Controls whether RCON is enabled, connection settings, authentication, and logging.
 #[derive(Deserialize, Serialize, Clone)]
 #[serde(default)]
 pub struct RCONConfig {
@@ -11,9 +14,9 @@ pub struct RCONConfig {
     /// The password required for RCON authentication.
     pub password: String,
     /// The maximum number of concurrent RCON connections allowed.
-    /// If 0, there is no limit.
+    /// A value of `0` indicates no limit.
     pub max_connections: u32,
-    /// RCON logging.
+    /// Logging configuration for RCON events.
     pub logging: RCONLogging,
 }
 
@@ -21,14 +24,17 @@ impl Default for RCONConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            address: SocketAddr::new(Ipv4Addr::new(0, 0, 0, 0).into(), 25575),
-            password: "".to_string(),
+            address: SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), 25575),
+            password: String::new(),
             max_connections: 0,
-            logging: Default::default(),
+            logging: RCONLogging::default(),
         }
     }
 }
 
+/// Logging settings for RCON.
+///
+/// Controls which RCON events are logged, including login attempts and commands.
 #[derive(Deserialize, Serialize, Clone, Debug)]
 #[serde(default)]
 pub struct RCONLogging {

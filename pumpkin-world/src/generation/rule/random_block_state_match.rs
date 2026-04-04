@@ -1,17 +1,15 @@
 use pumpkin_data::BlockState;
 use pumpkin_util::random::{RandomGenerator, RandomImpl};
-use serde::Deserialize;
 
-use crate::block::BlockStateCodec;
+use crate::block::RawBlockState;
 
-#[derive(Deserialize)]
 pub struct RandomBlockStateMatchRuleTest {
-    block_state: BlockStateCodec,
-    probability: f32,
+    pub block_state: BlockState,
+    pub probability: f32,
 }
 
 impl RandomBlockStateMatchRuleTest {
-    pub fn test(&self, state: &BlockState, random: &mut RandomGenerator) -> bool {
-        state.id == self.block_state.get_state_id() && random.next_f32() < self.probability
+    pub fn test(&self, state: RawBlockState, random: &mut RandomGenerator) -> bool {
+        state.0 == self.block_state.id && random.next_f32() < self.probability
     }
 }

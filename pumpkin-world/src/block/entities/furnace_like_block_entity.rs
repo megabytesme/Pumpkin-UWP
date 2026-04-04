@@ -1,13 +1,19 @@
 use std::sync::Arc;
 
-use pumpkin_data::recipes::CookingRecipe;
+use pumpkin_data::{item_stack::ItemStack, recipes::CookingRecipe};
 use tokio::sync::Mutex;
 
 use crate::{
     block::entities::{BlockEntity, PropertyDelegate},
     inventory::{Clearable, Inventory},
-    item::ItemStack,
 };
+
+/// Trait for extracting smelting experience from cooking block entities.
+/// This is a separate dyn-compatible trait since `CookingBlockEntityBase` is not.
+pub trait ExperienceContainer: Send + Sync {
+    /// Extract and reset accumulated experience, returning the total as an integer
+    fn extract_experience(&self) -> i32;
+}
 
 pub trait CookingBlockEntityBase:
     Sync + Send + Inventory + PropertyDelegate + BlockEntity + Clearable
@@ -16,6 +22,13 @@ pub trait CookingBlockEntityBase:
     fn get_cooking_total_time(&self) -> u16;
     fn get_lit_time_remaining(&self) -> u16;
     fn get_lit_total_time(&self) -> u16;
+
+    /// Track that a recipe was used (for XP calculation on extraction)
+    /// Uses the result item ID as the recipe identifier
+    fn add_recipe_used(&self, recipe: &CookingRecipe);
+    /// Extract and reset accumulated experience, returning the total as an integer
+    /// Calculates XP from tracked recipes and clears the `recipes_used` map
+    fn extract_experience_from_recipes(&self) -> i32;
 
     fn get_input_item(&self) -> impl std::future::Future<Output = Arc<Mutex<ItemStack>>>;
     fn get_fuel_item(&self) -> impl std::future::Future<Output = Arc<Mutex<ItemStack>>>;
@@ -91,6 +104,27 @@ macro_rules! impl_cooking_block_entity_base {
                 self.get_lit_time_remaining() > 0
             }
 
+            fn add_recipe_used(&self, recipe: &pumpkin_data::recipes::CookingRecipe) {
+                // Track recipe usage by recipe ID for XP calculation
+                let recipe_id = recipe.recipe_id.to_string();
+                let mut recipes = self.recipes_used.lock().unwrap();
+                *recipes.entry(recipe_id).or_insert(0) += 1;
+            }
+
+            fn extract_experience_from_recipes(&self) -> i32 {
+                // Calculate total XP from tracked recipes and clear the map (vanilla behavior)
+                let mut recipes = self.recipes_used.lock().unwrap();
+                let mut total_xp: f32 = 0.0;
+                for (recipe_id, count) in recipes.iter() {
+                    // Look up the recipe's XP value
+                    if let Some(xp) = pumpkin_data::recipes::get_recipe_experience(recipe_id) {
+                        total_xp += xp * (*count as f32);
+                    }
+                }
+                recipes.clear();
+                total_xp.floor() as i32
+            }
+
             async fn can_accept_recipe_output(
                 &self,
                 recipe: Option<&pumpkin_data::recipes::CookingRecipe>,
@@ -145,6 +179,9 @@ macro_rules! impl_cooking_block_entity_base {
                         } else if side_items.are_items_and_components_equal(&output_item_stack) {
                             side_items.increment(1);
                         }
+
+                        // Track recipe usage for XP calculation (vanilla RecipesUsed format)
+                        self.add_recipe_used(recipe);
                     }
 
                     let bottom_items = self.items[1].lock().await;
@@ -212,7 +249,22 @@ macro_rules! impl_clearable_for_cooking {
                     for slot in self.items.iter() {
                         *slot.lock().await = ItemStack::EMPTY.clone();
                     }
+                    self.mark_dirty();
                 })
+            }
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! impl_experience_container_for_cooking {
+    ($struct_name:ty) => {
+        impl $crate::block::entities::furnace_like_block_entity::ExperienceContainer
+            for $struct_name
+        {
+            fn extract_experience(&self) -> i32 {
+                // Delegate to the CookingBlockEntityBase method
+                self.extract_experience_from_recipes()
             }
         }
     };
@@ -252,6 +304,7 @@ macro_rules! impl_inventory_for_cooking {
                     let mut removed = ItemStack::EMPTY.clone();
                     let mut guard = self.items[slot].lock().await;
                     std::mem::swap(&mut removed, &mut *guard);
+                    self.mark_dirty();
                     removed
                 })
             }
@@ -261,9 +314,11 @@ macro_rules! impl_inventory_for_cooking {
                 slot: usize,
                 amount: u8,
             ) -> $crate::inventory::InventoryFuture<'_, ItemStack> {
-                Box::pin(
-                    async move { $crate::inventory::split_stack(&self.items, slot, amount).await },
-                )
+                Box::pin(async move {
+                    let res = $crate::inventory::split_stack(&self.items, slot, amount).await;
+                    self.mark_dirty();
+                    res
+                })
             }
 
             fn set_stack(
@@ -293,8 +348,10 @@ macro_rules! impl_inventory_for_cooking {
                             self.set_cooking_total_time(0);
                         }
                         self.set_cooking_time_spent(0);
-                        self.mark_dirty();
                     }
+
+                    // Always consider the inventory changed when setting a stack
+                    self.mark_dirty();
                 })
             }
 
@@ -315,7 +372,7 @@ macro_rules! impl_block_entity_for_cooking {
         impl $crate::block::entities::BlockEntity for $struct_name {
             fn tick<'a>(
                 &'a self,
-                world: Arc<dyn $crate::world::SimpleWorld>,
+                world: &'a Arc<dyn $crate::world::SimpleWorld>,
             ) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
                 Box::pin(async move {
                     let is_burning = self.is_burning();
@@ -438,7 +495,7 @@ macro_rules! impl_block_entity_for_cooking {
                     }
 
                     if is_dirty {
-                        self.is_dirty();
+                        self.mark_dirty();
                     }
                 })
             }
@@ -471,6 +528,15 @@ macro_rules! impl_block_entity_for_cooking {
                     nbt.get_short("lit_time_remaining")
                         .map_or(0, |lit_time_remaining| lit_time_remaining as u16),
                 );
+                // Load RecipesUsed from NBT (vanilla format: map of recipe ID -> craft count)
+                let mut recipes_used_map = HashMap::new();
+                if let Some(recipes_compound) = nbt.get_compound("RecipesUsed") {
+                    for (recipe_id, tag) in &recipes_compound.child_tags {
+                        if let pumpkin_nbt::tag::NbtTag::Int(count) = tag {
+                            recipes_used_map.insert(recipe_id.clone(), *count as u32);
+                        }
+                    }
+                }
 
                 let furnace = Self {
                     position,
@@ -480,6 +546,7 @@ macro_rules! impl_block_entity_for_cooking {
                     cooking_time_spent,
                     lit_total_time,
                     lit_time_remaining,
+                    recipes_used: std::sync::Mutex::new(recipes_used_map),
                 };
                 furnace.read_data(nbt, &furnace.items);
 
@@ -495,7 +562,27 @@ macro_rules! impl_block_entity_for_cooking {
                     nbt.put_short("cooking_time_spent", self.get_cooking_time_spent() as i16);
                     nbt.put_short("lit_total_time", self.get_lit_total_time() as i16);
                     nbt.put_short("lit_time_remaining", self.get_lit_time_remaining() as i16);
-                    self.write_data(nbt, &self.items, true).await;
+
+                    // Save RecipesUsed in vanilla format (map of recipe ID -> craft count)
+                    // Scope the mutex guard so it's dropped before the await
+                    {
+                        let recipes = self.recipes_used.lock().unwrap();
+                        if !recipes.is_empty() {
+                            let mut recipes_compound = pumpkin_nbt::compound::NbtCompound::new();
+                            for (recipe_id, count) in recipes.iter() {
+                                recipes_compound.put(
+                                    recipe_id.as_str(),
+                                    pumpkin_nbt::tag::NbtTag::Int(*count as i32),
+                                );
+                            }
+                            nbt.put(
+                                "RecipesUsed",
+                                pumpkin_nbt::tag::NbtTag::Compound(recipes_compound),
+                            );
+                        }
+                    }
+
+                    self.write_inventory_nbt(nbt, true).await;
                 })
             }
 
@@ -515,6 +602,18 @@ macro_rules! impl_block_entity_for_cooking {
                 self: Arc<Self>,
             ) -> Option<Arc<dyn $crate::block::entities::PropertyDelegate>> {
                 Some(self as Arc<dyn $crate::block::entities::PropertyDelegate>)
+            }
+
+            fn to_experience_container(
+                self: Arc<Self>,
+            ) -> Option<
+                Arc<dyn $crate::block::entities::furnace_like_block_entity::ExperienceContainer>,
+            > {
+                Some(
+                    self as Arc<
+                        dyn $crate::block::entities::furnace_like_block_entity::ExperienceContainer,
+                    >,
+                )
             }
         }
     };

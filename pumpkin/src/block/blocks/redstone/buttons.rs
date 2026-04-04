@@ -3,10 +3,8 @@ use std::sync::Arc;
 use pumpkin_data::Block;
 use pumpkin_data::BlockDirection;
 use pumpkin_data::HorizontalFacingExt;
-use pumpkin_data::block_properties::BlockFace;
+use pumpkin_data::block_properties::AttachFace;
 use pumpkin_data::block_properties::BlockProperties;
-use pumpkin_data::tag::RegistryKey;
-use pumpkin_data::tag::get_tag_values;
 use pumpkin_macros::pumpkin_block_from_tag;
 use pumpkin_util::math::position::BlockPos;
 use pumpkin_world::BlockStateId;
@@ -138,7 +136,12 @@ impl BlockBehaviour for ButtonBlock {
 
     fn can_place_at<'a>(&'a self, args: CanPlaceAtArgs<'a>) -> BlockFuture<'a, bool> {
         Box::pin(async move {
-            WallMountedBlock::can_place_at(self, args.block_accessor, args.position, args.direction)
+            // Use the provided direction, or fallback to the current state's direction if missing
+            let direction = args
+                .direction
+                .unwrap_or_else(|| self.get_direction(args.state.id, args.block));
+
+            WallMountedBlock::can_place_at(self, args.block_accessor, args.position, direction)
                 .await
         })
     }
@@ -155,9 +158,9 @@ impl WallMountedBlock for ButtonBlock {
     fn get_direction(&self, state_id: BlockStateId, block: &Block) -> BlockDirection {
         let props = ButtonLikeProperties::from_state_id(state_id, block);
         match props.face {
-            BlockFace::Floor => BlockDirection::Up,
-            BlockFace::Ceiling => BlockDirection::Down,
-            BlockFace::Wall => props.facing.to_block_direction(),
+            AttachFace::Floor => BlockDirection::Up,
+            AttachFace::Ceiling => BlockDirection::Down,
+            AttachFace::Wall => props.facing.to_block_direction(),
         }
     }
 }

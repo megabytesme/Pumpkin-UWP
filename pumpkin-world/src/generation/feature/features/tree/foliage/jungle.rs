@@ -1,14 +1,12 @@
 use pumpkin_data::BlockState;
 use pumpkin_util::random::{RandomGenerator, RandomImpl};
-use serde::Deserialize;
 
 use super::{FoliagePlacer, LeaveValidator};
 use crate::generation::feature::features::tree::TreeNode;
 use crate::generation::proto_chunk::GenerationCache;
 
-#[derive(Deserialize)]
 pub struct JungleFoliagePlacer {
-    height: i32,
+    pub height: i32,
 }
 
 impl JungleFoliagePlacer {
@@ -42,7 +40,11 @@ impl JungleFoliagePlacer {
             );
         }
     }
-    pub fn get_random_height(&self, _random: &mut RandomGenerator, _trunk_height: i32) -> i32 {
+    pub const fn get_random_height(
+        &self,
+        _random: &mut RandomGenerator,
+        _trunk_height: i32,
+    ) -> i32 {
         self.height
     }
 }

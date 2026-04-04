@@ -4,16 +4,17 @@ use crate::entity::{
     Entity, EntityBase, EntityBaseFuture, NBTStorage, NbtFuture, living::LivingEntity,
 };
 use crossbeam::atomic::AtomicCell;
+use pumpkin_data::item_stack::ItemStack;
 use pumpkin_data::{
     damage::DamageType,
     data_component_impl::{EquipmentSlot, EquipmentType},
     entity::EntityStatus,
     item::Item,
+    particle::Particle,
     sound::{Sound, SoundCategory},
 };
 use pumpkin_nbt::{compound::NbtCompound, tag::NbtTag};
 use pumpkin_util::math::{euler_angle::EulerAngle, vector3::Vector3};
-use pumpkin_world::item::ItemStack;
 
 #[derive(Debug, Clone, Copy)]
 pub struct PackedRotation {
@@ -194,6 +195,7 @@ impl ArmorStandEntity {
         let armor_stand_item = ItemStack::new(1, &Item::ARMOR_STAND);
         entity
             .world
+            .load()
             .drop_stack(&entity.block_pos.load(), armor_stand_item)
             .await;
 
@@ -201,7 +203,7 @@ impl ArmorStandEntity {
     }
 
     async fn on_break(&self, entity: &Entity) {
-        let world = &entity.world;
+        let world = entity.world.load();
         world
             .play_sound(
                 Sound::EntityArmorStandBreak,
@@ -211,6 +213,26 @@ impl ArmorStandEntity {
             .await;
 
         // TODO: Implement equipment slots and make them drop all of their stored items.
+    }
+
+    /// Spawns break particles at the armor stand's position.
+    // TODO: use oak plank block particles like vanilla (requires block state data in particle system)
+    async fn spawn_break_particles(&self, entity: &Entity) {
+        let world = entity.world.load();
+        let pos = entity.pos.load();
+        let width = entity.width();
+        let height = entity.height();
+
+        // Spawn particles similar to vanilla: 10 particles with offset based on entity size
+        world
+            .spawn_particle(
+                Vector3::new(pos.x, pos.y + f64::from(height) * 0.6666, pos.z),
+                Vector3::new(width / 4.0, height / 4.0, width / 4.0),
+                0.05,
+                10,
+                Particle::Poof,
+            )
+            .await;
     }
 }
 
@@ -295,6 +317,13 @@ impl EntityBase for ArmorStandEntity {
         self
     }
 
+    fn kill<'a>(&'a self, _caller: &'a dyn EntityBase) -> EntityBaseFuture<'a, ()> {
+        Box::pin(async move {
+            self.get_entity().remove().await;
+            // TODO: emit GameEvent::ENTITY_DIE
+        })
+    }
+
     fn damage_with_context<'a>(
         &'a self,
         caller: &'a dyn EntityBase,
@@ -302,7 +331,7 @@ impl EntityBase for ArmorStandEntity {
         damage_type: DamageType,
         _position: Option<Vector3<f64>>,
         source: Option<&'a dyn EntityBase>,
-        _cause: Option<&'a dyn EntityBase>,
+        cause: Option<&'a dyn EntityBase>,
     ) -> EntityBaseFuture<'a, bool> {
         Box::pin(async move {
             let entity = self.get_entity();
@@ -310,10 +339,10 @@ impl EntityBase for ArmorStandEntity {
                 return false;
             }
 
-            let world = &entity.world;
+            let world = entity.world.load();
 
             let mob_griefing_gamerule = {
-                let game_rules = &world.level_info.read().await.game_rules;
+                let game_rules = &world.level_info.load().game_rules;
                 game_rules.mob_griefing
             };
 
@@ -322,42 +351,55 @@ impl EntityBase for ArmorStandEntity {
                 return false;
             }
 
-            // TODO: <DamageSource>.isIn(DamageTypeTags::BYPASSES_INVULNERABILITY)
+            let bypasses_invulnerability =
+                damage_type == DamageType::OUT_OF_WORLD || damage_type == DamageType::GENERIC_KILL;
 
-            if damage_type == DamageType::EXPLOSION {
-                // TODO: Implement Dropping Items that are in the Equipment Slots & entity.kill()
-                self.on_break(entity).await;
+            if bypasses_invulnerability {
                 entity.kill(caller).await;
-                //entity.remove().await;
-                return false;
-            } // TODO: Implement <DamageSource>.isIn(DamageTypeTags::IGNITES_ARMOR_STANDS)
-
-            // TODO: Implement <DamageSource>.isIn(DamageTypeTags::BURNS_ARMOR_STANDS)
-
-            /* // TODO:
-            bl1: bool = <DamageSource>.isIn(DamageTypeTags.CAN_BREAK_ARMOR_STAND);
-            bl2: bool = <DamageSource>.isIn(DamageTypeTags.ALWAYS_KILLS_ARMOR_STANDS);
-
-            if !bl1 && !bl2 {
                 return false;
             }
-            */
 
-            let Some(source) = source else { return false };
+            if entity.is_invulnerable_to(&damage_type) || self.is_invisible() || self.is_marker() {
+                return false;
+            }
 
-            // TODO: source is not giving the real player or wrong stuff cause .is_creative() is false even tho the player is in creative.
-            if let Some(player) = source.get_player() {
+            let is_explosion = damage_type == DamageType::FIREWORKS
+                || damage_type == DamageType::EXPLOSION
+                || damage_type == DamageType::PLAYER_EXPLOSION
+                || damage_type == DamageType::BAD_RESPAWN_POINT;
+
+            if is_explosion {
+                self.on_break(entity).await;
+                entity.kill(caller).await;
+                return false;
+            }
+
+            // TODO: IGNITES_ARMOR_STANDS (in_fire, campfire) - set on fire
+            // TODO: BURNS_ARMOR_STANDS (on_fire) - reduce health
+
+            let can_break = damage_type == DamageType::PLAYER_EXPLOSION
+                || damage_type == DamageType::PLAYER_ATTACK
+                || damage_type == DamageType::SPEAR
+                || damage_type == DamageType::MACE_SMASH;
+
+            let always_kills = damage_type == DamageType::ARROW
+                || damage_type == DamageType::TRIDENT
+                || damage_type == DamageType::FIREBALL
+                || damage_type == DamageType::WITHER_SKULL
+                || damage_type == DamageType::WIND_CHARGE;
+
+            if !can_break && !always_kills {
+                return false;
+            }
+
+            let attacker = cause.or(source);
+            if let Some(attacker) = attacker
+                && let Some(player) = attacker.get_player()
+            {
                 if !player.abilities.lock().await.allow_modify_world {
                     return false;
                 } else if player.is_creative() {
-                    world
-                        .play_sound(
-                            Sound::EntityArmorStandBreak,
-                            SoundCategory::Neutral,
-                            &entity.block_pos.load().to_f64(),
-                        )
-                        .await;
-                    self.break_and_drop_items().await;
+                    self.spawn_break_particles(entity).await;
                     entity.kill(caller).await;
                     return true;
                 }
@@ -365,10 +407,9 @@ impl EntityBase for ArmorStandEntity {
 
             let time = world.level_time.lock().await.query_gametime();
 
-            if time - self.last_hit_time.load(Ordering::Relaxed) > 5 {
-                // && !bl2 {
+            if time - self.last_hit_time.load(Ordering::Relaxed) > 5 && !always_kills {
                 world
-                    .send_entity_status(entity, EntityStatus::HitArmorStand)
+                    .send_entity_status(entity, EntityStatus::ArmorstandWobble)
                     .await;
                 world
                     .play_sound(
@@ -379,6 +420,7 @@ impl EntityBase for ArmorStandEntity {
                     .await;
                 self.last_hit_time.store(time, Ordering::Relaxed);
             } else {
+                self.spawn_break_particles(entity).await;
                 world
                     .play_sound(
                         Sound::EntityArmorStandBreak,
@@ -392,6 +434,10 @@ impl EntityBase for ArmorStandEntity {
 
             true
         })
+    }
+
+    fn get_gravity(&self) -> f64 {
+        0.08
     }
 }
 

@@ -2,14 +2,12 @@ use sha2::{Digest, Sha256};
 use std::cell::RefCell;
 
 use enum_dispatch::enum_dispatch;
-use pumpkin_data::{
-    chunk::{Biome, BiomeTree, NETHER_BIOME_SOURCE, OVERWORLD_BIOME_SOURCE},
-    dimension::Dimension,
-};
+use pumpkin_data::chunk::{Biome, BiomeTree, NETHER_BIOME_SOURCE, OVERWORLD_BIOME_SOURCE};
 
 use crate::generation::noise::router::multi_noise_sampler::MultiNoiseSampler;
 pub mod end;
 pub mod multi_noise;
+pub mod position_finder;
 
 thread_local! {
     /// A shortcut; check if last used biome is what we should use
@@ -18,36 +16,32 @@ thread_local! {
 
 #[enum_dispatch]
 pub trait BiomeSupplier {
-    fn biome(
-        x: i32,
-        y: i32,
-        z: i32,
-        noise: &mut MultiNoiseSampler<'_>,
-        dimension: Dimension,
-    ) -> &'static Biome;
+    fn biome(&self, x: i32, y: i32, z: i32, noise: &mut MultiNoiseSampler<'_>) -> &'static Biome;
 }
 
-pub struct MultiNoiseBiomeSupplier;
+#[derive(Clone, Copy)]
+pub struct MultiNoiseBiomeSupplier {
+    source: &'static BiomeTree,
+}
 
-impl BiomeSupplier for MultiNoiseBiomeSupplier {
-    fn biome(
-        x: i32,
-        y: i32,
-        z: i32,
-        noise: &mut MultiNoiseSampler<'_>,
-        dimension: Dimension,
-    ) -> &'static Biome {
-        let source: &'static BiomeTree = if dimension == Dimension::OVERWORLD {
-            &OVERWORLD_BIOME_SOURCE
-        } else {
-            &NETHER_BIOME_SOURCE
-        };
-        let point = noise.sample(x, y, z);
-        let point_list = point.convert_to_list();
-        LAST_RESULT_NODE.with_borrow_mut(|last_result| source.get(&point_list, last_result))
+impl MultiNoiseBiomeSupplier {
+    pub const OVERWORLD: Self = Self::new(&OVERWORLD_BIOME_SOURCE);
+    pub const NETHER: Self = Self::new(&NETHER_BIOME_SOURCE);
+
+    const fn new(source: &'static BiomeTree) -> Self {
+        Self { source }
     }
 }
 
+impl BiomeSupplier for MultiNoiseBiomeSupplier {
+    fn biome(&self, x: i32, y: i32, z: i32, noise: &mut MultiNoiseSampler<'_>) -> &'static Biome {
+        let point = noise.sample(x, y, z);
+        let point_list = point.convert_to_list();
+        LAST_RESULT_NODE.with_borrow_mut(|last_result| self.source.get(&point_list, last_result))
+    }
+}
+
+#[must_use]
 pub fn hash_seed(seed: u64) -> i64 {
     let mut hasher = Sha256::new();
     hasher.update(seed.to_le_bytes());
@@ -58,40 +52,44 @@ pub fn hash_seed(seed: u64) -> i64 {
 #[cfg(test)]
 mod test {
     use pumpkin_data::{
-        chunk::Biome, dimension::Dimension, noise_router::OVERWORLD_BASE_NOISE_ROUTER,
+        chunk::Biome, chunk_gen_settings::GenerationSettings, dimension::Dimension,
+        noise_router::OVERWORLD_BASE_NOISE_ROUTER,
     };
     use pumpkin_util::read_data_from_file;
     use serde::Deserialize;
 
     use crate::{
-        GENERATION_SETTINGS, GeneratorSetting, GlobalRandomConfig, ProtoChunk,
+        GlobalRandomConfig, ProtoChunk,
+        block::to_state_from_blueprint,
         chunk::palette::BIOME_NETWORK_MAX_BITS,
-        generation::{
-            noise::router::{
-                multi_noise_sampler::{MultiNoiseSampler, MultiNoiseSamplerBuilderOptions},
-                proto_noise_router::ProtoNoiseRouters,
-            },
-            proto_chunk::TerrainCache,
+        generation::noise::router::{
+            multi_noise_sampler::{MultiNoiseSampler, MultiNoiseSamplerBuilderOptions},
+            proto_noise_router::ProtoNoiseRouters,
         },
     };
 
     use super::{BiomeSupplier, MultiNoiseBiomeSupplier, hash_seed};
 
     #[test]
-    fn test_biome_desert() {
+    fn biome_desert() {
         let seed = 13579;
-        let random_config = GlobalRandomConfig::new(seed, false);
+        let random_config = GlobalRandomConfig::new(seed);
         let noise_router =
             ProtoNoiseRouters::generate(&OVERWORLD_BASE_NOISE_ROUTER, &random_config);
         let multi_noise_config = MultiNoiseSamplerBuilderOptions::new(1, 1, 1);
         let mut sampler =
             MultiNoiseSampler::generate(&noise_router.multi_noise, &multi_noise_config);
-        let biome = MultiNoiseBiomeSupplier::biome(-24, 1, 8, &mut sampler, Dimension::OVERWORLD);
-        assert_eq!(biome, &Biome::DESERT)
+        let biome = MultiNoiseBiomeSupplier::OVERWORLD.biome(-24, 1, 8, &mut sampler);
+        assert_eq!(biome, &Biome::DESERT);
     }
 
     #[test]
-    fn test_wide_area_surface() {
+    fn wide_area_surface() {
+        use crate::biome::hash_seed;
+        use crate::generation::noise::router::multi_noise_sampler::{
+            MultiNoiseSampler, MultiNoiseSamplerBuilderOptions,
+        };
+        use crate::generation::{biome_coords, positions::chunk_pos};
         #[derive(Deserialize)]
         struct BiomeData {
             x: i32,
@@ -103,21 +101,19 @@ mod test {
             read_data_from_file!("../../assets/biome_no_blend_no_beard_0.json");
 
         let seed = 0;
-        let random_config = GlobalRandomConfig::new(seed, false);
+        let random_config = GlobalRandomConfig::new(seed);
         let noise_router =
             ProtoNoiseRouters::generate(&OVERWORLD_BASE_NOISE_ROUTER, &random_config);
-        let surface_settings = GENERATION_SETTINGS
-            .get(&GeneratorSetting::Overworld)
-            .unwrap();
-        let _terrain_cache = TerrainCache::from_random(&random_config);
-        let default_block = surface_settings.default_block.get_state();
+        let surface_settings = GenerationSettings::from_dimension(&Dimension::OVERWORLD);
 
-        for data in expected_data.into_iter() {
+        //let _terrain_cache = TerrainCache::from_random(&random_config);
+        let default_block = to_state_from_blueprint(&surface_settings.default_block);
+
+        for data in expected_data {
             let chunk_x = data.x;
             let chunk_z = data.z;
 
             // Calculate biome mixer seed
-            use crate::biome::hash_seed;
             let biome_mixer_seed = hash_seed(random_config.seed);
 
             let mut chunk = ProtoChunk::new(
@@ -129,10 +125,6 @@ mod test {
             );
 
             // Create MultiNoiseSampler for populate_biomes
-            use crate::generation::noise::router::multi_noise_sampler::{
-                MultiNoiseSampler, MultiNoiseSamplerBuilderOptions,
-            };
-            use crate::generation::{biome_coords, positions::chunk_pos};
 
             let start_x = chunk_pos::start_block_x(chunk_x);
             let start_z = chunk_pos::start_block_z(chunk_z);
@@ -168,7 +160,7 @@ mod test {
     }
 
     #[test]
-    fn test_hash_seed() {
+    fn hash_seed_test() {
         let hashed_seed = hash_seed(0);
         assert_eq!(8794265229978523055, hashed_seed);
 
@@ -177,10 +169,11 @@ mod test {
     }
 
     #[test]
-    fn test_proper_network_bits_per_entry() {
+    fn proper_network_bits_per_entry() {
         let id_to_test = 1 << BIOME_NETWORK_MAX_BITS;
-        if Biome::from_id(id_to_test).is_some() {
-            panic!("We need to update our constants!");
-        }
+        assert!(
+            Biome::from_id(id_to_test).is_none(),
+            "We need to update our constants!"
+        );
     }
 }

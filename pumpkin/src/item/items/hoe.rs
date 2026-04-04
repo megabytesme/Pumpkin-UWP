@@ -6,13 +6,14 @@ use crate::server::Server;
 use pumpkin_data::BlockDirection;
 use pumpkin_data::entity::EntityType;
 use pumpkin_data::item::Item;
+use pumpkin_data::item_stack::ItemStack;
 use pumpkin_data::{Block, tag};
+use pumpkin_util::GameMode;
 use pumpkin_util::math::position::BlockPos;
-use pumpkin_world::item::ItemStack;
+use pumpkin_util::math::vector3::Vector3;
 use pumpkin_world::world::BlockFlags;
 use std::pin::Pin;
 use std::sync::Arc;
-use uuid::Uuid;
 
 pub struct HoeItem;
 
@@ -25,10 +26,11 @@ impl ItemMetadata for HoeItem {
 impl ItemBehaviour for HoeItem {
     fn use_on_block<'a>(
         &'a self,
-        _item: &'a mut ItemStack,
+        item: &'a mut ItemStack,
         player: &'a Player,
         location: BlockPos,
         face: BlockDirection,
+        _cursor_pos: Vector3<f32>,
         block: &'a Block,
         _server: &'a Server,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
@@ -42,11 +44,13 @@ impl ItemBehaviour for HoeItem {
             {
                 let mut future_block = block;
                 let world = player.world();
+                let mut changed = false;
 
                 //Only rooted can be right-clicked on the bottom of the block
                 if face == BlockDirection::Down {
                     if block == &Block::ROOTED_DIRT {
                         future_block = &Block::DIRT;
+                        changed = true;
                     }
                 } else {
                     // grass, dirt && dirt path become farmland
@@ -56,10 +60,12 @@ impl ItemBehaviour for HoeItem {
                         && world.get_block_state(&location.up()).await.is_air()
                     {
                         future_block = &Block::FARMLAND;
+                        changed = true;
                     }
                     //Coarse dirt and rooted dirt become dirt
                     else if block == &Block::COARSE_DIRT || block == &Block::ROOTED_DIRT {
                         future_block = &Block::DIRT;
+                        changed = true;
                     }
                 }
 
@@ -81,18 +87,17 @@ impl ItemBehaviour for HoeItem {
                         BlockDirection::West => location.up().to_f64().add_raw(-1.0, -0.4, 0.0),
                         BlockDirection::East => location.up().to_f64().add_raw(1.0, -0.4, 0.0),
                     };
-                    let entity = Entity::new(
-                        Uuid::new_v4(),
-                        world.clone(),
-                        location,
-                        &EntityType::ITEM,
-                        false,
-                    );
+                    let entity = Entity::new(world.clone(), location, &EntityType::ITEM);
                     // TODO: Merge stacks together
                     let item_entity = Arc::new(
                         ItemEntity::new(entity, ItemStack::new(1, &Item::HANGING_ROOTS)).await,
                     );
                     world.spawn_entity(item_entity).await;
+                }
+
+                if changed && player.gamemode.load() != GameMode::Creative {
+                    // TODO: Handle DamageResult::Broken to broadcast item break and update player slot.
+                    let _ = item.damage_item(1);
                 }
             }
         })

@@ -6,10 +6,12 @@ use crate::server::Server;
 use pumpkin_data::BlockDirection;
 use pumpkin_data::block_properties::BlockProperties;
 use pumpkin_data::block_properties::{OakDoorLikeProperties, PaleOakWoodLikeProperties};
+use pumpkin_data::item_stack::ItemStack;
 use pumpkin_data::tag::Taggable;
 use pumpkin_data::{Block, tag};
+use pumpkin_util::GameMode;
 use pumpkin_util::math::position::BlockPos;
-use pumpkin_world::item::ItemStack;
+use pumpkin_util::math::vector3::Vector3;
 use pumpkin_world::world::BlockFlags;
 
 pub struct AxeItem;
@@ -23,10 +25,11 @@ impl ItemMetadata for AxeItem {
 impl ItemBehaviour for AxeItem {
     fn use_on_block<'a>(
         &'a self,
-        _item: &'a mut ItemStack,
+        item: &'a mut ItemStack,
         player: &'a Player,
         location: BlockPos,
         _face: BlockDirection,
+        _cursor_pos: Vector3<f32>,
         block: &'a Block,
         _server: &'a Server,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
@@ -37,7 +40,7 @@ impl ItemBehaviour for AxeItem {
             // First we try to strip the block. by getting his equivalent and applying it the axis.
 
             // If there is a strip equivalent.
-            if replacement_block != 0 {
+            let changed = if replacement_block != 0 {
                 let new_block = &Block::from_id(replacement_block);
                 let new_state_id = if block.has_tag(&tag::Block::MINECRAFT_LOGS) {
                     let log_information = world.get_block_state_id(&location).await;
@@ -75,6 +78,14 @@ impl ItemBehaviour for AxeItem {
                 world
                     .set_block_state(&location, new_state_id, BlockFlags::NOTIFY_ALL)
                     .await;
+                true
+            } else {
+                false
+            };
+
+            if changed && player.gamemode.load() != GameMode::Creative {
+                // TODO: Handle DamageResult::Broken to broadcast item break and update player slot.
+                let _ = item.damage_item(1);
             }
         })
     }

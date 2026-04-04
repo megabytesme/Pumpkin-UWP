@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::command::CommandResult;
 use crate::command::dispatcher::CommandError::InvalidConsumption;
 use crate::command::{
@@ -9,8 +11,10 @@ use crate::command::{
     dispatcher::CommandError,
     tree::{CommandTree, builder::argument},
 };
+use crate::plugin::world::spawn_change::SpawnChangeEvent;
 use crate::server::Server;
 use pumpkin_data::dimension::Dimension;
+use pumpkin_data::translation;
 use pumpkin_util::{math::position::BlockPos, text::TextComponent};
 
 const NAMES: [&str; 1] = ["setworldspawn"];
@@ -31,24 +35,18 @@ impl CommandExecutor for NoArgsWorldSpawnExecutor {
         _args: &'a ConsumedArgs<'a>,
     ) -> CommandResult<'a> {
         Box::pin(async move {
-            let Some(block_pos) = sender.position() else {
-                let level_info_guard = server.level_info.read().await;
-                sender
-                    .send_message(TextComponent::translate(
-                        "commands.setworldspawn.success",
-                        [
-                            TextComponent::text(level_info_guard.spawn_x.to_string()),
-                            TextComponent::text(level_info_guard.spawn_y.to_string()),
-                            TextComponent::text(level_info_guard.spawn_z.to_string()),
-                            TextComponent::text(level_info_guard.spawn_angle.to_string()),
-                        ],
-                    ))
-                    .await;
-
-                return Ok(());
+            let Some(player) = sender.as_player() else {
+                if sender.is_console() {
+                    return Err(CommandError::CommandFailed(TextComponent::text(
+                        "You must specify a Position!",
+                    )));
+                }
+                return Err(CommandError::CommandFailed(TextComponent::text(
+                    "Failed to get Sender as Player!",
+                )));
             };
-
-            setworldspawn(sender, server, block_pos.to_block_pos(), 0.0).await
+            let block_pos = player.position();
+            setworldspawn(sender, server, block_pos.to_block_pos(), 0.0, 0.0).await
         })
     }
 }
@@ -67,7 +65,7 @@ impl CommandExecutor for DefaultWorldSpawnExecutor {
                 return Err(InvalidConsumption(Some(ARG_BLOCK_POS.into())));
             };
 
-            setworldspawn(sender, server, *block_pos, 0.0).await
+            setworldspawn(sender, server, *block_pos, 0.0, 0.0).await
         })
     }
 }
@@ -86,11 +84,13 @@ impl CommandExecutor for AngleWorldSpawnExecutor {
                 return Err(InvalidConsumption(Some(ARG_BLOCK_POS.into())));
             };
 
-            let Some(Arg::Rotation(_, yaw)) = args.get(ARG_ANGLE) else {
+            // Note: Rotation argument is (yaw, is_yaw_relative, pitch, is_pitch_relative)
+            // For setworldspawn, we use absolute values only (ignore relative flags)
+            let Some(Arg::Rotation(yaw, _, pitch, _)) = args.get(ARG_ANGLE) else {
                 return Err(InvalidConsumption(Some(ARG_ANGLE.into())));
             };
 
-            setworldspawn(sender, server, *block_pos, *yaw).await
+            setworldspawn(sender, server, *block_pos, *yaw, *pitch).await
         })
     }
 }
@@ -100,44 +100,70 @@ async fn setworldspawn(
     server: &Server,
     block_pos: BlockPos,
     yaw: f32,
-) -> Result<(), CommandError> {
+    pitch: f32,
+) -> Result<i32, CommandError> {
     let Some(world) = sender.world() else {
         return Err(CommandError::CommandFailed(TextComponent::text(
             "Failed to get world.",
         )));
     };
     if world.dimension != Dimension::OVERWORLD && world.dimension != Dimension::OVERWORLD_CAVES {
-        sender
-            .send_message(TextComponent::translate(
-                "commands.setworldspawn.failure.not_overworld",
-                [],
-            ))
-            .await;
-        return Ok(());
+        return Err(CommandError::CommandFailed(TextComponent::translate(
+            translation::COMMANDS_SETWORLDSPAWN_FAILURE_NOT_OVERWORLD,
+            [],
+        )));
     }
 
-    let mut level_info_guard = server.level_info.write().await;
-    level_info_guard.spawn_x = block_pos.0.x;
-    level_info_guard.spawn_y = block_pos.0.y;
-    level_info_guard.spawn_z = block_pos.0.z;
+    let current_info = server.level_info.load();
+    let previous_position = BlockPos::new(
+        current_info.spawn_x,
+        current_info.spawn_y,
+        current_info.spawn_z,
+    );
+    let mut new_position = block_pos;
+    let previous_yaw = current_info.spawn_yaw;
+    let previous_pitch = current_info.spawn_pitch;
+    let mut new_yaw = yaw;
+    let mut new_pitch = pitch;
+    let event = SpawnChangeEvent::new(
+        world.clone(),
+        previous_position,
+        previous_yaw,
+        previous_pitch,
+        new_position,
+        new_yaw,
+        new_pitch,
+    );
+    let event = server.plugin_manager.fire(event).await;
+    new_position = event.new_position;
+    new_yaw = event.new_yaw;
+    new_pitch = event.new_pitch;
 
-    level_info_guard.spawn_angle = yaw;
+    let mut new_info = (**current_info).clone();
 
-    drop(level_info_guard);
+    new_info.spawn_x = new_position.0.x;
+    new_info.spawn_y = new_position.0.y;
+    new_info.spawn_z = new_position.0.z;
+    new_info.spawn_yaw = new_yaw;
+    new_info.spawn_pitch = new_pitch;
+
+    server.level_info.store(Arc::new(new_info));
 
     sender
         .send_message(TextComponent::translate(
-            "commands.setworldspawn.success",
+            translation::COMMANDS_SETWORLDSPAWN_SUCCESS_NEW,
             [
-                TextComponent::text(block_pos.0.x.to_string()),
-                TextComponent::text(block_pos.0.y.to_string()),
-                TextComponent::text(block_pos.0.z.to_string()),
-                TextComponent::text(yaw.to_string()),
+                TextComponent::text(new_position.0.x.to_string()),
+                TextComponent::text(new_position.0.y.to_string()),
+                TextComponent::text(new_position.0.z.to_string()),
+                TextComponent::text(new_yaw.to_string()),
+                TextComponent::text(new_pitch.to_string()),
+                TextComponent::text(world.dimension.minecraft_name),
             ],
         ))
         .await;
 
-    Ok(())
+    Ok(1)
 }
 
 #[must_use]

@@ -1,19 +1,36 @@
-use super::{Entity, EntityBase, NBTStorage, ai::path::Navigator, living::LivingEntity};
+use super::{Entity, EntityBase, NBTStorage, ai::pathfinder::Navigator, living::LivingEntity};
 use crate::entity::EntityBaseFuture;
 use crate::entity::ai::control::look_control::LookControl;
 use crate::entity::ai::goal::goal_selector::GoalSelector;
+use crate::entity::player::Player;
 use crate::server::Server;
 use crate::world::World;
 use crossbeam::atomic::AtomicCell;
+use pumpkin_data::attributes::Attributes;
 use pumpkin_data::damage::DamageType;
+use pumpkin_data::data_component_impl::EquipmentSlot;
+use pumpkin_data::item_stack::ItemStack;
+use pumpkin_data::meta_data_type::MetaDataType;
+use pumpkin_data::tracked_data::TrackedData;
+use pumpkin_protocol::java::client::play::{CHeadRot, CUpdateEntityRot, Metadata};
+use pumpkin_util::math::boundingbox::BoundingBox;
 use pumpkin_util::math::position::BlockPos;
+use pumpkin_util::math::vector2::Vector2;
 use pumpkin_util::math::vector3::Vector3;
+use rand::RngExt;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::AtomicI32;
 use std::sync::atomic::Ordering::Relaxed;
+use std::sync::atomic::{AtomicI32, AtomicU8, Ordering};
 use tokio::sync::Mutex;
+use uuid::Uuid;
 
+pub mod bat;
+pub mod blaze;
+pub mod creeper;
+pub mod enderman;
+pub mod silverfish;
+pub mod skeleton;
 pub mod zombie;
 
 pub struct MobEntity {
@@ -25,9 +42,21 @@ pub struct MobEntity {
     pub look_control: Mutex<LookControl>,
     pub position_target: AtomicCell<BlockPos>,
     pub position_target_range: AtomicI32,
+    pub love_ticks: AtomicI32,
+    pub breeding_cooldown: AtomicI32,
+    mob_flags: AtomicU8,
+    last_sent_yaw: AtomicU8,
+    last_sent_pitch: AtomicU8,
+    last_sent_head_yaw: AtomicU8,
 }
 
 impl MobEntity {
+    #[expect(dead_code)]
+    const AI_DISABLED_FLAG: u8 = 1;
+    #[expect(dead_code)]
+    const LEFT_HANDED_FLAG: u8 = 2;
+    const ATTACKING_FLAG: u8 = 4;
+
     #[must_use]
     pub fn new(entity: Entity) -> Self {
         Self {
@@ -39,13 +68,19 @@ impl MobEntity {
             look_control: Mutex::new(LookControl::default()),
             position_target: AtomicCell::new(BlockPos::ZERO),
             position_target_range: AtomicI32::new(-1),
+            love_ticks: AtomicI32::new(0),
+            breeding_cooldown: AtomicI32::new(0),
+            mob_flags: AtomicU8::new(0),
+            last_sent_yaw: AtomicU8::new(0),
+            last_sent_pitch: AtomicU8::new(0),
+            last_sent_head_yaw: AtomicU8::new(0),
         }
     }
     pub fn is_in_position_target_range(&self) -> bool {
-        self.is_in_position_target_range_pos(self.living_entity.entity.block_pos.load())
+        self.is_in_position_target_range_pos(&self.living_entity.entity.block_pos.load())
     }
 
-    pub fn is_in_position_target_range_pos(&self, block_pos: BlockPos) -> bool {
+    pub fn is_in_position_target_range_pos(&self, block_pos: &BlockPos) -> bool {
         let position_target_range = self.position_target_range.load(Relaxed);
         if position_target_range == -1 {
             true
@@ -55,33 +90,219 @@ impl MobEntity {
         }
     }
 
-    pub fn set_attacking(&self, _attacking: bool) {
-        // TODO: set to data tracker
+    pub async fn set_attacking(&self, attacking: bool) {
+        self.set_mob_flag(Self::ATTACKING_FLAG, attacking).await;
+    }
+
+    async fn set_mob_flag(&self, flag: u8, value: bool) {
+        let old_b = self.mob_flags.load(Ordering::Relaxed);
+
+        let new_b = if value { old_b | flag } else { old_b & !flag };
+
+        if new_b != old_b {
+            self.mob_flags.store(new_b, Ordering::Relaxed);
+
+            self.living_entity
+                .entity
+                .send_meta_data(&[Metadata::new(
+                    TrackedData::MOB_FLAGS_ID,
+                    MetaDataType::BYTE,
+                    new_b,
+                )])
+                .await;
+        }
+    }
+
+    pub fn is_in_love(&self) -> bool {
+        self.love_ticks.load(Relaxed) > 0
+    }
+
+    pub fn set_love_ticks(&self, ticks: i32) {
+        self.love_ticks.store(ticks, Relaxed);
+    }
+
+    pub fn reset_love_ticks(&self) {
+        self.love_ticks.store(0, Relaxed);
+    }
+
+    pub fn is_breeding_ready(&self) -> bool {
+        self.living_entity.entity.age.load(Relaxed) >= 0
+            && self.breeding_cooldown.load(Relaxed) <= 0
+    }
+
+    pub async fn is_in_attack_range(&self, target: &dyn EntityBase) -> bool {
+        const DEFAULT_ATTACK_RANGE: f64 = 0.828_427_12; // sqrt(2.04) - 0.6
+
+        // TODO: Implement DataComponent lookup for ATTACK_RANGE when components are ready
+        let max_range = DEFAULT_ATTACK_RANGE;
+        let min_range = 0.0;
+
+        let target_hitbox = target.get_entity().bounding_box.load();
+
+        let attack_box_max = self.get_attack_box(max_range).await;
+
+        let intersects_max = attack_box_max.intersects(&target_hitbox);
+
+        if !intersects_max {
+            return false;
+        }
+
+        if min_range > 0.0 {
+            let attack_box_min = self.get_attack_box(min_range).await;
+            if attack_box_min.intersects(&target_hitbox) {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    pub async fn try_attack(&self, caller: &dyn EntityBase, target: &dyn EntityBase) {
+        if self.living_entity.dead.load(Relaxed) {
+            return;
+        }
+
+        let attack_damage: f32 =
+            self.living_entity
+                .get_attribute_value(&Attributes::ATTACK_DAMAGE) as f32;
+
+        let damaged = target
+            .damage_with_context(
+                target,
+                attack_damage,
+                DamageType::MOB_ATTACK,
+                None,
+                Some(caller),
+                Some(caller),
+            )
+            .await;
+
+        if damaged {
+            self.living_entity
+                .last_attacking_id
+                .store(target.get_entity().entity_id, Relaxed);
+            self.living_entity
+                .last_attack_time
+                .store(self.living_entity.entity.age.load(Relaxed), Relaxed);
+        }
+    }
+
+    async fn get_attack_box(&self, attack_range: f64) -> BoundingBox {
+        let vehicle_lock = self.living_entity.entity.vehicle.lock().await;
+
+        let base_box = vehicle_lock.as_ref().map_or_else(
+            || self.living_entity.entity.bounding_box.load(),
+            |vehicle| {
+                let vehicle_box = vehicle.get_entity().bounding_box.load();
+                let my_box = self.living_entity.entity.bounding_box.load();
+
+                BoundingBox {
+                    min: Vector3::new(
+                        my_box.min.x.min(vehicle_box.min.x),
+                        my_box.min.y,
+                        my_box.min.z.min(vehicle_box.min.z),
+                    ),
+                    max: Vector3::new(
+                        my_box.max.x.max(vehicle_box.max.x),
+                        my_box.max.y,
+                        my_box.max.z.max(vehicle_box.max.z),
+                    ),
+                }
+            },
+        );
+
+        base_box.expand(attack_range, 0.0, attack_range)
     }
 }
 
-// This trait contains all overridable functions
 pub trait Mob: EntityBase + Send + Sync {
     fn get_random(&self) -> rand::rngs::ThreadRng {
         rand::rng()
     }
 
-    fn get_max_look_yaw_change(&self) -> i32 {
-        10
+    fn get_max_look_yaw_change(&self) -> f32 {
+        10.0
     }
 
-    fn get_max_look_pitch_change(&self) -> i32 {
-        40
+    fn get_max_look_pitch_change(&self) -> f32 {
+        40.0
     }
 
-    fn get_max_head_rotation(&self) -> i32 {
-        75
+    fn get_max_head_rotation(&self) -> f32 {
+        75.0
     }
 
     fn get_mob_entity(&self) -> &MobEntity;
 
     fn get_path_aware_entity(&self) -> Option<&dyn PathAwareEntity> {
         None
+    }
+
+    /// Per-mob tick hook called each tick before AI runs. Override for mob-specific logic.
+    fn mob_tick<'a>(&'a self, _caller: &'a Arc<dyn EntityBase>) -> EntityBaseFuture<'a, ()> {
+        Box::pin(async {})
+    }
+
+    fn post_tick(&self) -> EntityBaseFuture<'_, ()> {
+        Box::pin(async {})
+    }
+
+    /// Called before damage is applied. Return `false` to cancel the damage entirely.
+    /// Used by endermen to dodge projectiles via teleportation.
+    fn pre_damage<'a>(
+        &'a self,
+        _damage_type: DamageType,
+        _source: Option<&'a dyn EntityBase>,
+    ) -> EntityBaseFuture<'a, bool> {
+        Box::pin(async { true })
+    }
+
+    fn on_damage<'a>(
+        &'a self,
+        _damage_type: DamageType,
+        _source: Option<&'a dyn EntityBase>,
+    ) -> EntityBaseFuture<'a, ()> {
+        Box::pin(async {})
+    }
+
+    fn on_eating_grass(&self) -> EntityBaseFuture<'_, ()> {
+        Box::pin(async {})
+    }
+
+    fn can_attack_with_owner(&self, _target: &dyn EntityBase, _owner: &dyn EntityBase) -> bool {
+        true
+    }
+
+    fn get_mob_gravity(&self) -> f64 {
+        self.get_mob_entity().living_entity.get_gravity()
+    }
+
+    fn get_mob_y_velocity_drag(&self) -> Option<f64> {
+        None
+    }
+
+    /// Set or clear the mob's target. Override to add side effects when targeting changes.
+    fn set_mob_target(&self, target: Option<Arc<dyn EntityBase>>) -> EntityBaseFuture<'_, ()> {
+        Box::pin(async move {
+            let mut mob_target = self.get_mob_entity().target.lock().await;
+            *mob_target = target;
+        })
+    }
+
+    fn mob_interact<'a>(
+        &'a self,
+        _player: &'a Player,
+        _item_stack: &'a mut ItemStack,
+    ) -> EntityBaseFuture<'a, bool> {
+        Box::pin(async { false })
+    }
+
+    fn get_owner_uuid(&self) -> Option<Uuid> {
+        None
+    }
+
+    fn is_sitting(&self) -> bool {
+        false
     }
 }
 
@@ -93,8 +314,17 @@ impl<T: Mob + Send + 'static> EntityBase for T {
     ) -> EntityBaseFuture<'a, ()> {
         Box::pin(async move {
             let mob_entity = self.get_mob_entity();
-            mob_entity.living_entity.tick(caller, server).await;
 
+            if mob_entity.breeding_cooldown.load(Relaxed) > 0 {
+                mob_entity.breeding_cooldown.fetch_sub(1, Relaxed);
+            }
+            if mob_entity.love_ticks.load(Relaxed) > 0 {
+                mob_entity.love_ticks.fetch_sub(1, Relaxed);
+            }
+
+            self.mob_tick(&caller).await;
+
+            // AI runs before physics (vanilla order: goals → navigator → look → physics)
             let age = mob_entity.living_entity.entity.age.load(Relaxed);
             if (age + mob_entity.living_entity.entity.entity_id) % 2 != 0 && age > 1 {
                 mob_entity
@@ -121,6 +351,42 @@ impl<T: Mob + Send + 'static> EntityBase for T {
             let mut look_control = mob_entity.look_control.lock().await;
             look_control.tick(self).await;
             drop(look_control);
+
+            mob_entity.living_entity.tick(caller, server).await;
+
+            self.post_tick().await;
+
+            // Send rotation packets after look_control finalizes head_yaw and pitch
+            let entity = &mob_entity.living_entity.entity;
+            let yaw = (entity.yaw.load() * 256.0 / 360.0).rem_euclid(256.0) as u8;
+            let pitch = (entity.pitch.load() * 256.0 / 360.0).rem_euclid(256.0) as u8;
+            let head_yaw = (entity.head_yaw.load() * 256.0 / 360.0).rem_euclid(256.0) as u8;
+
+            let last_yaw = mob_entity.last_sent_yaw.load(Relaxed);
+            let last_pitch = mob_entity.last_sent_pitch.load(Relaxed);
+            let last_head_yaw = mob_entity.last_sent_head_yaw.load(Relaxed);
+
+            if yaw.abs_diff(last_yaw) >= 1 || pitch.abs_diff(last_pitch) >= 1 {
+                let world = entity.world.load();
+                world
+                    .broadcast_packet_all(&CUpdateEntityRot::new(
+                        entity.entity_id.into(),
+                        yaw,
+                        pitch,
+                        entity.on_ground.load(Relaxed),
+                    ))
+                    .await;
+                mob_entity.last_sent_yaw.store(yaw, Relaxed);
+                mob_entity.last_sent_pitch.store(pitch, Relaxed);
+            }
+
+            if head_yaw.abs_diff(last_head_yaw) >= 1 {
+                let world = entity.world.load();
+                world
+                    .broadcast_packet_all(&CHeadRot::new(entity.entity_id.into(), head_yaw))
+                    .await;
+                mob_entity.last_sent_head_yaw.store(head_yaw, Relaxed);
+            }
         })
     }
 
@@ -134,11 +400,28 @@ impl<T: Mob + Send + 'static> EntityBase for T {
         cause: Option<&'a dyn EntityBase>,
     ) -> EntityBaseFuture<'a, bool> {
         Box::pin(async move {
-            self.get_mob_entity()
+            // pre_damage hook: allows mobs to dodge/cancel damage (e.g. enderman projectile dodge)
+            if !self.pre_damage(damage_type, source).await {
+                return false;
+            }
+            let damaged = self
+                .get_mob_entity()
                 .living_entity
                 .damage_with_context(caller, amount, damage_type, position, source, cause)
-                .await
+                .await;
+            if damaged {
+                self.on_damage(damage_type, source).await;
+            }
+            damaged
         })
+    }
+
+    fn interact<'a>(
+        &'a self,
+        player: &'a Player,
+        item_stack: &'a mut ItemStack,
+    ) -> EntityBaseFuture<'a, bool> {
+        Box::pin(async move { self.mob_interact(player, item_stack).await })
     }
 
     fn get_entity(&self) -> &Entity {
@@ -149,12 +432,39 @@ impl<T: Mob + Send + 'static> EntityBase for T {
         Some(&self.get_mob_entity().living_entity)
     }
 
+    fn is_in_love(&self) -> bool {
+        self.get_mob_entity().is_in_love()
+    }
+
+    fn is_breeding_ready(&self) -> bool {
+        self.get_mob_entity().is_breeding_ready()
+    }
+
+    fn reset_love(&self) {
+        self.get_mob_entity().reset_love_ticks();
+    }
+
+    fn set_breeding_cooldown(&self, ticks: i32) {
+        self.get_mob_entity()
+            .breeding_cooldown
+            .store(ticks, Relaxed);
+    }
+
+    fn is_panicking(&self) -> bool {
+        self.get_path_aware_entity()
+            .is_some_and(PathAwareEntity::is_panicking)
+    }
+
     fn as_nbt_storage(&self) -> &dyn NBTStorage {
         self
     }
 
     fn get_gravity(&self) -> f64 {
-        self.get_mob_entity().living_entity.get_gravity()
+        self.get_mob_gravity()
+    }
+
+    fn get_y_velocity_drag(&self) -> Option<f64> {
+        self.get_mob_y_velocity_drag()
     }
 }
 
@@ -200,5 +510,69 @@ pub trait PathAwareEntity: Mob + Send + Sync {
 
     fn get_follow_leash_speed(&self) -> f32 {
         1.0
+    }
+}
+
+pub trait SunSensitive: Mob + Send + Sync {
+    fn sun_sensitive_tick(&self) -> EntityBaseFuture<'_, ()> {
+        Box::pin(async {
+            let mob = self.get_mob_entity();
+            let entity = &mob.living_entity.entity;
+
+            if !entity.is_alive()
+                || entity.touching_water.load(Relaxed)
+                || entity.is_in_powder_snow()
+            {
+                return;
+            }
+
+            let world_arc = entity.world.load();
+            let world = world_arc.as_ref();
+
+            if world.level_time.lock().await.is_night() {
+                return;
+            }
+            if world.weather.lock().await.raining {
+                return;
+            }
+
+            let pos = entity.pos.load();
+            let top_y = world
+                .get_top_block(Vector2::new(pos.x as i32, pos.z as i32))
+                .await;
+            if (entity.get_eye_y() as i32) < top_y {
+                return;
+            }
+
+            let brightness = world
+                .level
+                .light_engine
+                .get_sky_light_level(&world.level, &pos.to_block_pos())
+                .await
+                .unwrap_or(0) as f32
+                / 15.0;
+
+            if brightness < 0.5 {
+                return;
+            }
+
+            let damage_amount = {
+                let mut rng = self.get_random();
+                if rng.random::<f32>() * 30.0 >= (brightness - 0.4) * 2.0 {
+                    return;
+                }
+                rng.random_range(0..=1i32)
+            };
+
+            let equipment = mob.living_entity.entity_equipment.lock().await;
+            let head_slot = equipment.get(&EquipmentSlot::HEAD);
+            let mut head_item = head_slot.lock().await;
+            if head_item.is_empty() {
+                entity.set_on_fire_for(8.0);
+            } else {
+                // TODO: Handle DamageResult::Broken to broadcast item break and update player slot.
+                let _ = head_item.damage_item(damage_amount);
+            }
+        })
     }
 }

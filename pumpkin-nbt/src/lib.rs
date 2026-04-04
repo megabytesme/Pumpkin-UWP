@@ -15,6 +15,7 @@ use thiserror::Error;
 pub mod compound;
 pub mod deserializer;
 pub mod nbt_compress;
+pub mod nbt_ops;
 pub mod serializer;
 pub mod tag;
 
@@ -59,13 +60,13 @@ pub enum Error {
 
 impl ser::Error for Error {
     fn custom<T: Display>(msg: T) -> Self {
-        Error::SerdeError(msg.to_string())
+        Self::SerdeError(msg.to_string())
     }
 }
 
 impl de::Error for Error {
     fn custom<T: Display>(msg: T) -> Self {
-        Error::SerdeError(msg.to_string())
+        Self::SerdeError(msg.to_string())
     }
 }
 
@@ -76,45 +77,47 @@ pub struct Nbt {
 }
 
 impl Nbt {
-    pub fn new(name: String, tag: NbtCompound) -> Self {
-        Nbt {
+    #[must_use]
+    pub const fn new(name: String, tag: NbtCompound) -> Self {
+        Self {
             name,
             root_tag: tag,
         }
     }
 
-    pub fn read<R: Read + Seek>(reader: &mut NbtReadHelper<R>) -> Result<Nbt, Error> {
+    pub fn read<R: Read + Seek>(reader: &mut NbtReadHelper<R>) -> Result<Self, Error> {
         let tag_type_id = reader.get_u8_be()?;
 
         if tag_type_id != COMPOUND_ID {
             return Err(Error::NoRootCompound(tag_type_id));
         }
 
-        Ok(Nbt {
+        Ok(Self {
             name: get_nbt_string(reader)?,
             root_tag: NbtCompound::deserialize_content(reader)?,
         })
     }
 
     /// Reads an NBT tag that doesn't contain the name of the root `Compound`.
-    pub fn read_unnamed<R: Read + Seek>(reader: &mut NbtReadHelper<R>) -> Result<Nbt, Error> {
+    pub fn read_unnamed<R: Read + Seek>(reader: &mut NbtReadHelper<R>) -> Result<Self, Error> {
         let tag_type_id = reader.get_u8_be()?;
 
         if tag_type_id != COMPOUND_ID {
             return Err(Error::NoRootCompound(tag_type_id));
         }
 
-        Ok(Nbt {
+        Ok(Self {
             name: String::new(),
             root_tag: NbtCompound::deserialize_content(reader)?,
         })
     }
 
-    pub fn write(&self) -> Bytes {
+    #[must_use]
+    pub fn write(self) -> Bytes {
         let mut bytes = Vec::new();
         let mut writer = WriteAdaptor::new(&mut bytes);
         writer.write_u8_be(COMPOUND_ID).unwrap();
-        NbtTag::String(self.name.to_string())
+        NbtTag::String(self.name)
             .serialize_data(&mut writer)
             .unwrap();
         self.root_tag.serialize_content(&mut writer).unwrap();
@@ -122,13 +125,14 @@ impl Nbt {
         bytes.into()
     }
 
-    pub fn write_to_writer<W: Write>(&self, mut writer: W) -> Result<(), io::Error> {
+    pub fn write_to_writer<W: Write>(self, mut writer: W) -> Result<(), io::Error> {
         writer.write_all(&self.write())?;
         Ok(())
     }
 
     /// Writes an NBT tag without a root `Compound` name.
-    pub fn write_unnamed(&self) -> Bytes {
+    #[must_use]
+    pub fn write_unnamed(self) -> Bytes {
         let mut bytes = Vec::new();
         let mut writer = WriteAdaptor::new(&mut bytes);
 
@@ -138,7 +142,7 @@ impl Nbt {
         bytes.into()
     }
 
-    pub fn write_unnamed_to_writer<W: Write>(&self, mut writer: W) -> Result<(), io::Error> {
+    pub fn write_unnamed_to_writer<W: Write>(self, mut writer: W) -> Result<(), io::Error> {
         writer.write_all(&self.write_unnamed())?;
         Ok(())
     }
@@ -154,14 +158,14 @@ impl Deref for Nbt {
 
 impl From<NbtCompound> for Nbt {
     fn from(value: NbtCompound) -> Self {
-        Nbt::new(String::new(), value)
+        Self::new(String::new(), value)
     }
 }
 
 impl<T> AsRef<T> for Nbt
 where
     T: ?Sized,
-    <Nbt as Deref>::Target: AsRef<T>,
+    <Self as Deref>::Target: AsRef<T>,
 {
     fn as_ref(&self) -> &T {
         self.deref().as_ref()
@@ -178,7 +182,7 @@ pub fn get_nbt_string<R: Read + Seek>(bytes: &mut NbtReadHelper<R>) -> Result<St
     let len = bytes.get_u16_be()? as usize;
     let string_bytes = bytes.read_boxed_slice(len)?;
     let string = cesu8::from_java_cesu8(&string_bytes).map_err(|_| Error::Cesu8DecodingError)?;
-    Ok(string.to_string())
+    Ok(string.into_owned())
 }
 
 // TODO: This is a bit hacky
@@ -208,12 +212,14 @@ mod test {
     use std::io::Cursor;
 
     use crate::Error;
+    use crate::compound::NbtCompound;
     use crate::deserializer::from_bytes;
     use crate::nbt_byte_array;
     use crate::nbt_int_array;
     use crate::nbt_long_array;
-    use crate::serializer::to_bytes;
     use crate::serializer::to_bytes_named;
+    use crate::serializer::{WriteAdaptor, to_bytes};
+    use crate::tag::NbtTag;
     use crate::{deserializer::from_bytes_unnamed, serializer::to_bytes_unnamed};
     use serde::{Deserialize, Serialize};
 
@@ -228,7 +234,7 @@ mod test {
     }
 
     #[test]
-    fn test_simple_ser_de_unnamed() {
+    fn simple_ser_de_unnamed() {
         let test = Test {
             byte: 123,
             short: 1342,
@@ -246,6 +252,7 @@ mod test {
     }
 
     #[derive(Serialize, Deserialize, PartialEq, Debug)]
+    #[expect(clippy::struct_field_names)]
     struct TestArray {
         #[serde(serialize_with = "nbt_byte_array")]
         byte_array: Vec<u8>,
@@ -256,7 +263,7 @@ mod test {
     }
 
     #[test]
-    fn test_simple_ser_de_array() {
+    fn simple_ser_de_array() {
         let test = TestArray {
             byte_array: vec![0, 3, 2],
             int_array: vec![13, 1321, 2],
@@ -271,7 +278,7 @@ mod test {
     }
 
     #[test]
-    fn test_simple_ser_de_named() {
+    fn simple_ser_de_named() {
         let name = String::from("Test");
         let test = Test {
             byte: 123,
@@ -290,7 +297,7 @@ mod test {
     }
 
     #[test]
-    fn test_simple_ser_de_array_named() {
+    fn simple_ser_de_array_named() {
         let name = String::from("Test");
         let test = TestArray {
             byte_array: vec![0, 3, 2],
@@ -325,7 +332,7 @@ mod test {
     }
 
     #[test]
-    fn test_list() {
+    fn list() {
         let test1 = Test {
             byte: 123,
             short: 1342,
@@ -354,7 +361,7 @@ mod test {
                 },
             },
             compounds: vec![test1, test2],
-            list_string: vec!["".to_string(), "abcbcbcbbc".to_string()],
+            list_string: vec![String::new(), "abcbcbcbbc".to_string()],
             empty: vec![],
         };
 
@@ -365,7 +372,7 @@ mod test {
     }
 
     #[test]
-    fn test_list_named() {
+    fn list_named() {
         let test1 = Test {
             byte: 123,
             short: 1342,
@@ -392,7 +399,7 @@ mod test {
                 },
             },
             compounds: vec![test1, test2],
-            list_string: vec!["".to_string(), "abcbcbcbbc".to_string()],
+            list_string: vec![String::new(), "abcbcbcbbc".to_string()],
             empty: vec![],
         };
 
@@ -403,7 +410,89 @@ mod test {
     }
 
     #[test]
-    fn test_nbt_arrays() {
+    fn wrapper_compound_lists() {
+        let mut vec: Vec<NbtTag> = Vec::new();
+
+        // These tags will be wrapped during serialization.
+        vec.push(NbtTag::Int(-1823));
+        vec.push(NbtTag::Int(123));
+        vec.push(NbtTag::String("Not an int".to_string()));
+        vec.push(NbtTag::Byte(2));
+
+        // This compound will not, since the list is already a list of compound tags.
+        // This compound cannot be unwrapped in any way, so it is preserved
+        // on deserialization.
+        vec.push(NbtTag::Compound({
+            let mut compound = NbtCompound::new();
+            compound.put_short("example", 1234);
+            compound
+        }));
+
+        // This wrapper compound will be wrapped because we want to preserve the
+        // original data during deserialization.
+        //
+        // Suppose we had {"": `tag`}. If we didn't wrap this, on deserialization,
+        // we would get `tag`, which doesn't match the serialized compound tag.
+        // Therefore, we must wrap it and serialize {"": {"": `tag`}}.
+        // Then on deserialization, we get {"": `tag`}, which matches what we wanted
+        // to serialize in the first place.
+        //
+        // This compound represents {"": 1L}.
+        vec.push(NbtTag::Compound({
+            let mut compound = NbtCompound::new();
+            compound.put_long("", 1);
+            compound
+        }));
+
+        let expected_bytes = [
+            0x09, // List type
+            0x0A, // This list is a compound tag list
+            0x00, 0x00, 0x00, 0x06, // This list has 6 elements.
+            // Now for parsing each compound tag:
+            0x03, // Int type
+            0x00, 0x00, // Empty key
+            0xFF, 0xFF, 0xF8, 0xE1, // -1823
+            0x00, // End
+            0x03, // Int type
+            0x00, 0x00, // Empty key
+            0x00, 0x00, 0x00, 0x7B, // 123
+            0x00, // End
+            0x08, // String type
+            0x00, 0x00, // Empty key
+            0x00, 0x0A, // The string is 10 characters long.
+            0x4E, 0x6F, 0x74, 0x20, 0x61, 0x6E, 0x20, 0x69, 0x6E, 0x74, // "Not an int"
+            0x00, // End
+            0x01, // Byte type
+            0x00, 0x00, // Empty key
+            0x02, // 2b
+            0x00, // End
+            // For the first (unwrapped) compound:
+            0x02, // Short type
+            0x00, 0x07, // The key is 7 characters long.
+            0x65, 0x78, 0x61, 0x6D, 0x70, 0x6C, 0x65, // "example"
+            0x04, 0xD2, // 1234
+            0x00, // End
+            // For the second (wrapped) wrapper compound:
+            0x0A, // Compound type
+            0x00, 0x00, // Empty key
+            0x04, // Long type
+            0x00, 0x00, // Empty key
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, // 1L
+            0x00, // End
+            0x00, // End
+        ];
+
+        let mut bytes = Vec::new();
+        let mut write_adaptor = WriteAdaptor::new(&mut bytes);
+        NbtTag::List(vec)
+            .serialize(&mut write_adaptor)
+            .expect("Expected serialization to succeed");
+
+        assert_eq!(bytes, expected_bytes);
+    }
+
+    #[test]
+    fn nbt_arrays() {
         #[derive(Serialize)]
         struct Tagged {
             #[serde(serialize_with = "nbt_long_array")]
@@ -411,6 +500,12 @@ mod test {
             #[serde(serialize_with = "nbt_int_array")]
             i: [i32; 1],
             #[serde(serialize_with = "nbt_byte_array")]
+            b: [u8; 1],
+        }
+        #[derive(Serialize)]
+        struct NotTagged {
+            l: [i64; 1],
+            i: [i32; 1],
             b: [u8; 1],
         }
 
@@ -443,13 +538,6 @@ mod test {
         let mut bytes = Vec::new();
         to_bytes(&value, &mut bytes).unwrap();
         assert_eq!(bytes, expected_bytes);
-
-        #[derive(Serialize)]
-        struct NotTagged {
-            l: [i64; 1],
-            i: [i32; 1],
-            b: [u8; 1],
-        }
 
         let value = NotTagged {
             l: [0],
@@ -486,7 +574,7 @@ mod test {
     }
 
     #[test]
-    fn test_tuple_fail() {
+    fn tuple_fail() {
         #[derive(Serialize)]
         struct BadData {
             x: (i32, i64),
@@ -499,11 +587,11 @@ mod test {
         match err {
             Err(Error::SerdeError(_)) => (),
             _ => panic!("Expected to fail serialization!"),
-        };
+        }
     }
 
     #[test]
-    fn test_tuple_ok() {
+    fn tuple_ok() {
         #[derive(Serialize, Deserialize, PartialEq, Debug)]
         struct GoodData {
             x: (i32, i32),

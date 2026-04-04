@@ -1,18 +1,15 @@
-use pumpkin_data::{Block, BlockState};
+use pumpkin_data::Block;
 use pumpkin_util::random::{RandomGenerator, RandomImpl};
-use serde::Deserialize;
 
-#[derive(Deserialize)]
+use crate::block::RawBlockState;
+
 pub struct RandomBlockMatchRuleTest {
-    // This should be a Block codec, so this is wrong
-    block: String,
-    probability: f32,
+    pub block: Block,
+    pub probability: f32,
 }
 
 impl RandomBlockMatchRuleTest {
-    pub fn test(&self, state: &BlockState, random: &mut RandomGenerator) -> bool {
-        Block::from_state_id(state.id).name
-            == self.block.strip_prefix("minecraft:").unwrap_or(&self.block)
-            && random.next_f32() < self.probability
+    pub fn test(&self, state: RawBlockState, random: &mut RandomGenerator) -> bool {
+        state.to_block().name == self.block.name && random.next_f32() < self.probability
     }
 }

@@ -3,26 +3,22 @@ name = "pumpkin"
 version.workspace = true
 description = "Empowering everyone to host fast and efficient Minecraft servers."
 edition.workspace = true
-rust-version = "1.89"
+rust-version.workspace = true
+license.workspace = true
 
 [package.metadata.tauri-winres]
 # FileDescription is handled as the Program name by Windows!
 FileDescription = "Pumpkin"
 OriginalFilename = "pumpkin.exe"
-LegalCopyright = "Copyright © 2025 Aleksander Medvedev"
+LegalCopyright = "Copyright © 2026 Aleksander Medvedev"
 
 # Required to expose pumpkin plugin API
 [lib]
-crate-type = ["rlib", "cdylib"]
 doctest = false
-
-[[bin]]
-name = "pumpkin"
-path = "src/main.rs"
-required-features = ["build-binary"]
 
 [dependencies]
 # pumpkin
+arc-swap.workspace = true
 pumpkin-util.workspace = true
 pumpkin-nbt.workspace = true
 pumpkin-config.workspace = true
@@ -30,10 +26,8 @@ pumpkin-inventory.workspace = true
 pumpkin-world.workspace = true
 pumpkin-data.workspace = true
 pumpkin-protocol.workspace = true
-pumpkin-registry.workspace = true
 pumpkin-macros.workspace = true
 
-log.workspace = true
 crossbeam.workspace = true
 uuid.workspace = true
 tokio = { workspace = true, features = [
@@ -61,14 +55,14 @@ rand.workspace = true
 num-bigint.workspace = true
 
 # Console line reading
-rustyline-async = { workspace = true, optional = true }
+rustyline.workspace = true
 
 # encryption
-rsa = { workspace = true, features = ["sha1"] }
+rsa.workspace = true
 pkcs8.workspace = true
 
 # authentication
-ureq.workspace = true
+ureq = { workspace = true, features = ["json"] }
 
 sha1.workspace = true
 
@@ -79,10 +73,11 @@ sha2.workspace = true
 base64.workspace = true
 
 # logging
-simplelog = { workspace = true, features = ["ansi_term"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
 
-# Remove time in favor of chrono?
-time = { workspace = true, features = ["parsing", "macros"] }
+chrono.workspace = true
+time = { workspace = true, features = ["parsing", "macros", "local-offset"] }
 
 # plugins
 libloading.workspace = true
@@ -93,12 +88,22 @@ tokio-util = { workspace = true, features = ["rt"] }
 
 flate2.workspace = true
 console-subscriber = { workspace = true, optional = true }
-signature.workspace = true
+
+wasmtime = { workspace = true }
+wasmtime-wasi = { workspace = true }
+wasmparser = { workspace = true }
+
+postcard = { workspace = true }
+tracing-serde-structured = { workspace = true }
+
+bitflags = { workspace = true }
+
 [dev-dependencies]
 tempfile.workspace = true
 
 [features]
 console-subscriber = ["dep:console-subscriber"]
 tokio_taskdump = ["pumpkin-world/tokio_taskdump"]
-console = ["dep:rustyline-async"]
-default = ["console"]
+
+[lints]
+workspace = true

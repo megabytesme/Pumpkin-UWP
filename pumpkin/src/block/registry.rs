@@ -1,15 +1,24 @@
 use crate::block::blocks::anvil::AnvilBlock;
 
+use crate::block::blocks::banners::BannerBlock;
 use crate::block::blocks::barrel::BarrelBlock;
 use crate::block::blocks::barrier::BarrierBlock;
 use crate::block::blocks::bed::BedBlock;
+use crate::block::blocks::brewing_stand::BrewingStandBlock;
+use crate::block::blocks::cake::CakeBlock;
+use crate::block::blocks::campfire::CampfireBlock;
+use crate::block::blocks::candle_cakes::CandleCakeBlock;
+use crate::block::blocks::candles::CandleBlock;
 use crate::block::blocks::carpet::{CarpetBlock, MossCarpetBlock, PaleMossCarpetBlock};
 use crate::block::blocks::carved_pumpkin::CarvedPumpkinBlock;
-use crate::block::blocks::chests::ChestBlock;
+use crate::block::blocks::chests::{ChestBlock, CopperChestBlock, TrappedChestBlock};
+use crate::block::blocks::chiseled_bookshelf::ChiseledBookshelfBlock;
 use crate::block::blocks::command::CommandBlock;
 use crate::block::blocks::composter::ComposterBlock;
+use crate::block::blocks::conduit::ConduitBlock;
 use crate::block::blocks::dirt_path::DirtPathBlock;
 use crate::block::blocks::doors::DoorBlock;
+use crate::block::blocks::dripstone::DripstoneBlock;
 use crate::block::blocks::end_portal::EndPortalBlock;
 use crate::block::blocks::end_portal_frame::EndPortalFrameBlock;
 use crate::block::blocks::falling::FallingBlock;
@@ -18,11 +27,16 @@ use crate::block::blocks::fence_gates::FenceGateBlock;
 use crate::block::blocks::fences::FenceBlock;
 use crate::block::blocks::fire::fire::FireBlock;
 use crate::block::blocks::fire::soul_fire::SoulFireBlock;
+use crate::block::blocks::flower_pots::FlowerPotBlock;
 use crate::block::blocks::furnace::FurnaceBlock;
 use crate::block::blocks::glass_panes::GlassPaneBlock;
+use crate::block::blocks::glazed_terracotta::GlazedTerracottaBlock;
 use crate::block::blocks::grindstone::GrindstoneBlock;
+use crate::block::blocks::hay::HayBlock;
+use crate::block::blocks::infested::InfestedBlock;
 use crate::block::blocks::iron_bars::IronBarsBlock;
 use crate::block::blocks::logs::LogBlock;
+use crate::block::blocks::magma::MagmaBlock;
 use crate::block::blocks::mangrove_roots::MangroveRootsBlock;
 use crate::block::blocks::nether_portal::NetherPortalBlock;
 use crate::block::blocks::note::NoteBlock;
@@ -33,22 +47,44 @@ use crate::block::blocks::plant::bamboo::BambooBlock;
 use crate::block::blocks::plant::bamboo_sapling::BambooSaplingBlock;
 use crate::block::blocks::plant::bush::BushBlock;
 use crate::block::blocks::plant::cactus::CactusBlock;
+use crate::block::blocks::plant::cactus_flower::CactusFlowerBlock;
+use crate::block::blocks::plant::crop::beetroot::BeetrootBlock;
+use crate::block::blocks::plant::crop::carrot::CarrotBlock;
 use crate::block::blocks::plant::crop::nether_wart::NetherWartBlock;
+use crate::block::blocks::plant::crop::potatoes::PotatoBlock;
 use crate::block::blocks::plant::crop::sweet_berry_bush::SweetBerryBushBlock;
+use crate::block::blocks::plant::crop::torch_flower::TorchFlowerBlock;
+use crate::block::blocks::plant::crop::wheat::WheatBlock;
 use crate::block::blocks::plant::dry_vegetation::DryVegetationBlock;
 use crate::block::blocks::plant::flower::FlowerBlock;
 use crate::block::blocks::plant::flowerbed::FlowerbedBlock;
+use crate::block::blocks::plant::fungus::FungusBlock;
+use crate::block::blocks::plant::kelp::KelpBlock;
 use crate::block::blocks::plant::leaf_litter::LeafLitterBlock;
 use crate::block::blocks::plant::lily_pad::LilyPadBlock;
 use crate::block::blocks::plant::mushroom_plant::MushroomPlantBlock;
+use crate::block::blocks::plant::nether_sprouts::NetherSproutsBlock;
+use crate::block::blocks::plant::roots::RootsBlock;
 use crate::block::blocks::plant::sapling::SaplingBlock;
+use crate::block::blocks::plant::sea_pickles::SeaPickleBlock;
+use crate::block::blocks::plant::seagrass::SeaGrassBlock;
 use crate::block::blocks::plant::short_plant::ShortPlantBlock;
+use crate::block::blocks::plant::spore_blossom::SporeBlossomBlock;
 use crate::block::blocks::plant::sugar_cane::SugarCaneBlock;
 use crate::block::blocks::plant::tall_plant::TallPlantBlock;
+use crate::block::blocks::plant::tall_seagrass::TallSeaGrassBlock;
+use crate::block::blocks::plant::twisting_vines::TwistingVinesBlock;
+use crate::block::blocks::plant::weeping_vines::WeepingVinesBlock;
+use crate::block::blocks::plant::wither_rose::WitherRoseBlock;
+use crate::block::blocks::powder_snow::PowderSnowBlock;
 use crate::block::blocks::pumpkin::PumpkinBlock;
+use crate::block::blocks::redstone::bell::BellBlock;
 use crate::block::blocks::redstone::buttons::ButtonBlock;
 use crate::block::blocks::redstone::comparator::ComparatorBlock;
 use crate::block::blocks::redstone::copper_bulb::CopperBulbBlock;
+use crate::block::blocks::redstone::daylight_detector::DaylightDetectorBlock;
+use crate::block::blocks::redstone::dispenser::DispenserBlock;
+use crate::block::blocks::redstone::dropper::DropperBlock;
 use crate::block::blocks::redstone::lever::LeverBlock;
 use crate::block::blocks::redstone::observer::ObserverBlock;
 use crate::block::blocks::redstone::pressure_plate::plate::PressurePlateBlock;
@@ -65,53 +101,43 @@ use crate::block::blocks::redstone::repeater::RepeaterBlock;
 use crate::block::blocks::redstone::target_block::TargetBlock;
 use crate::block::blocks::redstone::tripwire::TripwireBlock;
 use crate::block::blocks::redstone::tripwire_hook::TripwireHookBlock;
+use crate::block::blocks::shelf::ShelfBlock;
 use crate::block::blocks::signs::SignBlock;
 use crate::block::blocks::slabs::SlabBlock;
+use crate::block::blocks::slime::SlimeBlock;
+use crate::block::blocks::snow::LayeredSnowBlock;
 use crate::block::blocks::spawner::SpawnerBlock;
+use crate::block::blocks::sponge::{SpongeBlock, WetSpongeBlock};
 use crate::block::blocks::stairs::StairBlock;
 use crate::block::blocks::tnt::TNTBlock;
 use crate::block::blocks::torches::TorchBlock;
 use crate::block::blocks::trapdoor::TrapDoorBlock;
 use crate::block::blocks::vine::VineBlock;
 use crate::block::blocks::walls::WallBlock;
+use crate::block::blocks::wither_skull::WitherSkeletonSkullBlock;
 use crate::block::fluid::lava::FlowingLava;
 use crate::block::fluid::water::FlowingWater;
-use crate::block::{BlockBehaviour, BlockHitResult, BlockMetadata, OnEntityCollisionArgs};
+use crate::block::{
+    BlockBehaviour, BlockHitResult, BlockMetadata, GetInsideCollisionShapeArgs,
+    OnEntityCollisionArgs, OnLandedUponArgs, UpdateEntityMovementAfterFallOnArgs,
+    stop_vertical_movement_after_fall,
+};
 use crate::entity::EntityBase;
 use crate::entity::player::Player;
 use crate::server::Server;
 use crate::world::World;
-use pumpkin_data::fluid;
 use pumpkin_data::fluid::Fluid;
 use pumpkin_data::item::Item;
+use pumpkin_data::item_stack::ItemStack;
 use pumpkin_data::{Block, BlockDirection, BlockState};
 use pumpkin_protocol::java::server::play::SUseItemOn;
+use pumpkin_util::math::boundingbox::BoundingBox;
 use pumpkin_util::math::position::BlockPos;
 use pumpkin_world::BlockStateId;
-use pumpkin_world::item::ItemStack;
 use pumpkin_world::world::{BlockAccessor, BlockFlags, BlockRegistryExt};
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-
-use crate::block::blocks::banners::BannerBlock;
-use crate::block::blocks::cake::CakeBlock;
-use crate::block::blocks::campfire::CampfireBlock;
-use crate::block::blocks::candle_cakes::CandleCakeBlock;
-use crate::block::blocks::candles::CandleBlock;
-use crate::block::blocks::chiseled_bookshelf::ChiseledBookshelfBlock;
-use crate::block::blocks::flower_pots::FlowerPotBlock;
-use crate::block::blocks::glazed_terracotta::GlazedTerracottaBlock;
-use crate::block::blocks::plant::crop::beetroot::BeetrootBlock;
-use crate::block::blocks::plant::crop::carrot::CarrotBlock;
-use crate::block::blocks::plant::crop::potatoes::PotatoBlock;
-use crate::block::blocks::plant::crop::torch_flower::TorchFlowerBlock;
-use crate::block::blocks::plant::crop::wheat::WheatBlock;
-use crate::block::blocks::plant::roots::RootsBlock;
-use crate::block::blocks::plant::sea_grass::SeaGrassBlock;
-use crate::block::blocks::plant::sea_pickles::SeaPickleBlock;
-use crate::block::blocks::redstone::dispenser::DispenserBlock;
-use crate::block::blocks::redstone::dropper::DropperBlock;
 
 use super::BlockIsReplacing;
 use super::blocks::plant::crop::gourds::attached_stem::AttachedStemBlock;
@@ -123,8 +149,10 @@ use super::{
     OnPlaceArgs, OnStateReplacedArgs, OnSyncedBlockEventArgs, PlacedArgs, PlayerPlacedArgs,
     PrepareArgs, UseWithItemArgs,
 };
+use crate::block::OnEntityStepArgs;
 use crate::block::blocks::blast_furnace::BlastFurnaceBlock;
 use crate::block::blocks::chain::ChainBlock;
+use crate::block::blocks::cobweb::CobwebBlock;
 use crate::block::blocks::crafting_table::CraftingTableBlock;
 use crate::block::blocks::end_rod::EndRodBlock;
 use crate::block::blocks::ender_chest::EnderChestBlock;
@@ -149,10 +177,13 @@ pub fn default_registry() -> Arc<BlockRegistry> {
     manager.register(CactusBlock);
     manager.register(CarpetBlock);
     manager.register(CarvedPumpkinBlock);
+    manager.register(WitherSkeletonSkullBlock);
     manager.register(CampfireBlock);
     manager.register(MossCarpetBlock);
     manager.register(PaleMossCarpetBlock);
     manager.register(ChestBlock);
+    manager.register(TrappedChestBlock);
+    manager.register(CopperChestBlock);
     manager.register(EnderChestBlock);
     manager.register(CraftingTableBlock);
     manager.register(DirtPathBlock);
@@ -162,12 +193,15 @@ pub fn default_registry() -> Arc<BlockRegistry> {
     manager.register(FenceBlock);
     manager.register(FlowerPotBlock);
     manager.register(FurnaceBlock);
+    manager.register(BrewingStandBlock);
     manager.register(BlastFurnaceBlock);
     manager.register(SmokerBlock);
     manager.register(GlassPaneBlock);
     manager.register(GlazedTerracottaBlock);
+    manager.register(HayBlock);
     manager.register(GrindstoneBlock);
     manager.register(IronBarsBlock);
+    manager.register(InfestedBlock);
     manager.register(JukeboxBlock);
     manager.register(LogBlock);
     manager.register(BambooBlock);
@@ -175,6 +209,7 @@ pub fn default_registry() -> Arc<BlockRegistry> {
     manager.register(BannerBlock);
     manager.register(SignBlock);
     manager.register(SlabBlock);
+    manager.register(SlimeBlock);
     manager.register(StairBlock);
     manager.register(ShortPlantBlock);
     manager.register(DryVegetationBlock);
@@ -190,6 +225,8 @@ pub fn default_registry() -> Arc<BlockRegistry> {
     manager.register(CarrotBlock);
     manager.register(SweetBerryBushBlock);
     manager.register(SeaGrassBlock);
+    manager.register(TallSeaGrassBlock);
+    manager.register(KelpBlock);
     manager.register(NetherWartBlock);
     manager.register(WheatBlock);
     manager.register(TorchBlock);
@@ -202,7 +239,10 @@ pub fn default_registry() -> Arc<BlockRegistry> {
     manager.register(NetherPortalBlock);
     manager.register(TallPlantBlock);
     manager.register(NoteBlock);
+    manager.register(PowderSnowBlock);
+    manager.register(SpongeBlock);
     manager.register(PumpkinBlock);
+    manager.register(WetSpongeBlock);
     manager.register(CommandBlock);
     manager.register(ComposterBlock);
     manager.register(PressurePlateBlock);
@@ -216,6 +256,7 @@ pub fn default_registry() -> Arc<BlockRegistry> {
     manager.register(CandleCakeBlock);
     manager.register(SkullBlock);
     manager.register(ChiseledBookshelfBlock);
+    manager.register(ShelfBlock);
     manager.register(LecternBlock);
     manager.register(StemBlock);
     manager.register(AttachedStemBlock);
@@ -224,15 +265,28 @@ pub fn default_registry() -> Arc<BlockRegistry> {
     manager.register(EndRodBlock);
     manager.register(BarrierBlock);
     manager.register(MangroveRootsBlock);
+    manager.register(LayeredSnowBlock);
+    manager.register(CobwebBlock);
+    manager.register(WitherRoseBlock);
+    manager.register(FungusBlock);
+    manager.register(NetherSproutsBlock);
+    manager.register(SporeBlossomBlock);
+    manager.register(ConduitBlock);
+    manager.register(DripstoneBlock);
+    manager.register(TwistingVinesBlock);
+    manager.register(WeepingVinesBlock);
+    manager.register(CactusFlowerBlock);
 
     manager.register(FallingBlock);
 
     // Fire
     manager.register(SoulFireBlock);
     manager.register(FireBlock);
+    manager.register(MagmaBlock);
 
     // Redstone
     manager.register(ButtonBlock);
+    manager.register(BellBlock);
     manager.register(LeverBlock);
     manager.register(ObserverBlock);
     manager.register(TripwireBlock);
@@ -257,6 +311,7 @@ pub fn default_registry() -> Arc<BlockRegistry> {
     manager.register(DropperBlock);
     manager.register(DispenserBlock);
     manager.register(LadderBlock);
+    manager.register(DaylightDetectorBlock);
 
     // Rails
     manager.register(RailBlock);
@@ -271,7 +326,7 @@ pub fn default_registry() -> Arc<BlockRegistry> {
 }
 
 // ActionResult.java
-#[derive(PartialEq)]
+#[derive(PartialEq, Eq)]
 pub enum BlockActionResult {
     /// Action was successful | Same as SUCCESS in vanilla
     Success,
@@ -289,24 +344,24 @@ pub enum BlockActionResult {
 
 impl BlockActionResult {
     #[must_use]
-    pub fn consumes_action(&self) -> bool {
+    pub const fn consumes_action(&self) -> bool {
         matches!(self, Self::Consume | Self::Success | Self::SuccessServer)
     }
 }
 
 #[derive(Default)]
 pub struct BlockRegistry {
-    blocks: HashMap<&'static Block, Arc<dyn BlockBehaviour>>,
-    fluids: HashMap<&'static Fluid, Arc<dyn FluidBehaviour>>,
+    blocks: FxHashMap<u16, Arc<dyn BlockBehaviour>>,
+    fluids: FxHashMap<u16, Arc<dyn FluidBehaviour>>,
 }
 
 impl BlockRegistryExt for BlockRegistry {
     fn can_place_at(
         &self,
         block: &pumpkin_data::Block,
+        state: &BlockState,
         block_accessor: &dyn BlockAccessor,
         block_pos: &BlockPos,
-        face: BlockDirection,
     ) -> bool {
         futures::executor::block_on(async move {
             self.can_place_at(
@@ -315,8 +370,9 @@ impl BlockRegistryExt for BlockRegistry {
                 block_accessor,
                 None,
                 block,
+                state,
                 block_pos,
-                face,
+                None,
                 None,
             )
             .await
@@ -326,22 +382,20 @@ impl BlockRegistryExt for BlockRegistry {
 
 impl BlockRegistry {
     pub fn register<T: BlockBehaviour + BlockMetadata + 'static>(&mut self, block: T) {
-        let names = block.names();
+        let ids = T::ids();
         let val = Arc::new(block);
-        self.blocks.reserve(names.len());
-        for i in names {
-            self.blocks
-                .insert(Block::from_name(i.as_str()).unwrap(), val.clone());
+        self.blocks.reserve(ids.len());
+        for i in ids {
+            self.blocks.insert(i, val.clone());
         }
     }
 
     pub fn register_fluid<T: FluidBehaviour + BlockMetadata + 'static>(&mut self, fluid: T) {
-        let names = fluid.names();
+        let ids = T::ids();
         let val = Arc::new(fluid);
-        self.fluids.reserve(names.len());
-        for i in names {
-            self.fluids
-                .insert(fluid::get_fluid(i.as_str()).unwrap(), val.clone());
+        self.fluids.reserve(ids.len());
+        for i in ids {
+            self.fluids.insert(i, val.clone());
         }
     }
 
@@ -353,7 +407,7 @@ impl BlockRegistry {
         r#type: u8,
         data: u8,
     ) -> bool {
-        let pumpkin_block = self.get_pumpkin_block(block);
+        let pumpkin_block = self.get_pumpkin_block(block.id);
         if let Some(pumpkin_block) = pumpkin_block {
             return pumpkin_block
                 .on_synced_block_event(OnSyncedBlockEventArgs {
@@ -377,7 +431,7 @@ impl BlockRegistry {
         state: &BlockState,
         server: &Server,
     ) {
-        let pumpkin_block = self.get_pumpkin_block(block);
+        let pumpkin_block = self.get_pumpkin_block(block.id);
         if let Some(pumpkin_block) = pumpkin_block {
             pumpkin_block
                 .on_entity_collision(OnEntityCollisionArgs {
@@ -392,8 +446,31 @@ impl BlockRegistry {
         }
     }
 
+    pub async fn on_entity_step(
+        &self,
+        block: &Block,
+        world: &Arc<World>,
+        entity: &dyn EntityBase,
+        position: &BlockPos,
+        state: &BlockState,
+        below_supporting_block: bool,
+    ) {
+        if let Some(pumpkin_block) = self.get_pumpkin_block(block.id) {
+            pumpkin_block
+                .on_entity_step(OnEntityStepArgs {
+                    world,
+                    block,
+                    state,
+                    position,
+                    entity,
+                    below_supporting_block,
+                })
+                .await;
+        }
+    }
+
     pub async fn on_entity_collision_fluid(&self, fluid: &Fluid, entity: &dyn EntityBase) {
-        let pumpkin_fluid = self.get_pumpkin_fluid(fluid);
+        let pumpkin_fluid = self.get_pumpkin_fluid(fluid.id);
         if let Some(pumpkin_fluid) = pumpkin_fluid {
             pumpkin_fluid.on_entity_collision(entity).await;
         }
@@ -408,7 +485,7 @@ impl BlockRegistry {
         server: &Server,
         world: &Arc<World>,
     ) -> BlockActionResult {
-        let pumpkin_block = self.get_pumpkin_block(block);
+        let pumpkin_block = self.get_pumpkin_block(block.id);
         if let Some(pumpkin_block) = pumpkin_block {
             return pumpkin_block
                 .normal_use(NormalUseArgs {
@@ -425,7 +502,7 @@ impl BlockRegistry {
     }
 
     pub async fn explode(&self, block: &Block, world: &Arc<World>, position: &BlockPos) {
-        let pumpkin_block = self.get_pumpkin_block(block);
+        let pumpkin_block = self.get_pumpkin_block(block.id);
         if let Some(pumpkin_block) = pumpkin_block {
             pumpkin_block
                 .explode(ExplodeArgs {
@@ -448,7 +525,7 @@ impl BlockRegistry {
         server: &Server,
         world: &Arc<World>,
     ) -> BlockActionResult {
-        let pumpkin_block = self.get_pumpkin_block(block);
+        let pumpkin_block = self.get_pumpkin_block(block.id);
         if let Some(pumpkin_block) = pumpkin_block {
             return pumpkin_block
                 .use_with_item(UseWithItemArgs {
@@ -474,7 +551,7 @@ impl BlockRegistry {
         server: &Server,
         world: &Arc<World>,
     ) -> BlockActionResult {
-        let pumpkin_fluid = self.get_pumpkin_fluid(fluid);
+        let pumpkin_fluid = self.get_pumpkin_fluid(fluid.id);
         if let Some(pumpkin_fluid) = pumpkin_fluid {
             return pumpkin_fluid
                 .use_with_item(fluid, player, position, item, server, world)
@@ -491,11 +568,12 @@ impl BlockRegistry {
         block_accessor: &dyn BlockAccessor,
         player: Option<&Player>,
         block: &Block,
+        state: &BlockState,
         position: &BlockPos,
-        direction: BlockDirection,
+        direction: Option<BlockDirection>,
         use_item_on: Option<&SUseItemOn>,
     ) -> bool {
-        let pumpkin_block = self.get_pumpkin_block(block);
+        let pumpkin_block = self.get_pumpkin_block(block.id);
         if let Some(pumpkin_block) = pumpkin_block {
             return pumpkin_block
                 .can_place_at(CanPlaceAtArgs {
@@ -503,6 +581,7 @@ impl BlockRegistry {
                     world,
                     block_accessor,
                     block,
+                    state,
                     position,
                     direction,
                     player,
@@ -524,7 +603,7 @@ impl BlockRegistry {
         use_item_on: &SUseItemOn,
         player: &Player,
     ) -> bool {
-        let pumpkin_block = self.get_pumpkin_block(block);
+        let pumpkin_block = self.get_pumpkin_block(block.id);
         if let Some(pumpkin_block) = pumpkin_block {
             return pumpkin_block
                 .can_update_at(CanUpdateAtArgs {
@@ -553,7 +632,7 @@ impl BlockRegistry {
         replacing: BlockIsReplacing,
         use_item_on: &SUseItemOn,
     ) -> BlockStateId {
-        let pumpkin_block = self.get_pumpkin_block(block);
+        let pumpkin_block = self.get_pumpkin_block(block.id);
         if let Some(pumpkin_block) = pumpkin_block {
             return pumpkin_block
                 .on_place(OnPlaceArgs {
@@ -580,7 +659,7 @@ impl BlockRegistry {
         direction: BlockDirection,
         player: &Player,
     ) {
-        let pumpkin_block = self.get_pumpkin_block(block);
+        let pumpkin_block = self.get_pumpkin_block(block.id);
         if let Some(pumpkin_block) = pumpkin_block {
             pumpkin_block
                 .player_placed(PlayerPlacedArgs {
@@ -604,7 +683,7 @@ impl BlockRegistry {
         old_state_id: BlockStateId,
         notify: bool,
     ) {
-        let pumpkin_block = self.get_pumpkin_block(block);
+        let pumpkin_block = self.get_pumpkin_block(block.id);
         if let Some(pumpkin_block) = pumpkin_block {
             pumpkin_block
                 .placed(PlacedArgs {
@@ -628,11 +707,46 @@ impl BlockRegistry {
         old_state_id: BlockStateId,
         notify: bool,
     ) {
-        let pumpkin_fluid = self.get_pumpkin_fluid(fluid);
+        let pumpkin_fluid = self.get_pumpkin_fluid(fluid.id);
         if let Some(pumpkin_fluid) = pumpkin_fluid {
             pumpkin_fluid
                 .placed(world, fluid, state_id, position, old_state_id, notify)
                 .await;
+        }
+    }
+
+    pub async fn on_landed_upon(
+        &self,
+        block: &Block,
+        world: &Arc<World>,
+        fall_distance: f32,
+        entity: &dyn EntityBase,
+    ) {
+        let pumpkin_block = self.get_pumpkin_block(block.id);
+        if let Some(pumpkin_block) = pumpkin_block {
+            pumpkin_block
+                .on_landed_upon(OnLandedUponArgs {
+                    world,
+                    fall_distance,
+                    entity,
+                })
+                .await;
+        }
+    }
+
+    pub async fn update_entity_movement_after_fall_on(
+        &self,
+        block: &Block,
+        entity: &dyn EntityBase,
+    ) {
+        if let Some(pumpkin_block) = self.get_pumpkin_block(block.id) {
+            pumpkin_block
+                .update_entity_movement_after_fall_on(UpdateEntityMovementAfterFallOnArgs {
+                    entity,
+                })
+                .await;
+        } else {
+            stop_vertical_movement_after_fall(entity);
         }
     }
 
@@ -645,7 +759,7 @@ impl BlockRegistry {
         server: &Server,
         state: &BlockState,
     ) {
-        let pumpkin_block = self.get_pumpkin_block(block);
+        let pumpkin_block = self.get_pumpkin_block(block.id);
         if let Some(pumpkin_block) = pumpkin_block {
             pumpkin_block
                 .broken(BrokenArgs {
@@ -668,7 +782,7 @@ impl BlockRegistry {
         old_state_id: BlockStateId,
         moved: bool,
     ) {
-        let pumpkin_block = self.get_pumpkin_block(block);
+        let pumpkin_block = self.get_pumpkin_block(block.id);
         if let Some(pumpkin_block) = pumpkin_block {
             pumpkin_block
                 .on_state_replaced(OnStateReplacedArgs {
@@ -690,21 +804,21 @@ impl BlockRegistry {
         block: &Block,
         flags: BlockFlags,
     ) {
-        let state = world.get_block_state(position).await;
+        let state_id = world.get_block_state_id(position).await;
         for direction in BlockDirection::all() {
             let neighbor_pos = position.offset(direction.to_offset());
-            let neighbor_state = world.get_block_state(&neighbor_pos).await;
-            let pumpkin_block = self.get_pumpkin_block(block);
+            let neighbor_state_id = world.get_block_state_id(&neighbor_pos).await;
+            let pumpkin_block = self.get_pumpkin_block(block.id);
             if let Some(pumpkin_block) = pumpkin_block {
                 let new_state = pumpkin_block
                     .get_state_for_neighbor_update(GetStateForNeighborUpdateArgs {
                         world,
                         block,
-                        state_id: state.id,
+                        state_id,
                         position,
                         direction: direction.opposite(),
                         neighbor_position: &neighbor_pos,
-                        neighbor_state_id: neighbor_state.id,
+                        neighbor_state_id,
                     })
                     .await;
                 world.set_block_state(&neighbor_pos, new_state, flags).await;
@@ -720,7 +834,7 @@ impl BlockRegistry {
         state_id: BlockStateId,
         flags: BlockFlags,
     ) {
-        let pumpkin_block = self.get_pumpkin_block(block);
+        let pumpkin_block = self.get_pumpkin_block(block.id);
         if let Some(pumpkin_block) = pumpkin_block {
             pumpkin_block
                 .prepare(PrepareArgs {
@@ -745,7 +859,7 @@ impl BlockRegistry {
         neighbor_location: &BlockPos,
         neighbor_state_id: BlockStateId,
     ) -> BlockStateId {
-        let pumpkin_block = self.get_pumpkin_block(block);
+        let pumpkin_block = self.get_pumpkin_block(block.id);
         if let Some(pumpkin_block) = pumpkin_block {
             return pumpkin_block
                 .get_state_for_neighbor_update(GetStateForNeighborUpdateArgs {
@@ -789,7 +903,7 @@ impl BlockRegistry {
         source_block: &Block,
         notify: bool,
     ) {
-        let pumpkin_block = self.get_pumpkin_block(block);
+        let pumpkin_block = self.get_pumpkin_block(block.id);
         if let Some(pumpkin_block) = pumpkin_block {
             pumpkin_block
                 .on_neighbor_update(OnNeighborUpdateArgs {
@@ -804,13 +918,20 @@ impl BlockRegistry {
     }
 
     #[must_use]
-    pub fn get_pumpkin_block(&self, block: &Block) -> Option<&Arc<dyn BlockBehaviour>> {
-        self.blocks.get(block)
+    pub fn get_pumpkin_block(&self, block: u16) -> Option<&Arc<dyn BlockBehaviour>> {
+        self.blocks.get(&block)
     }
 
     #[must_use]
-    pub fn get_pumpkin_fluid(&self, fluid: &Fluid) -> Option<&Arc<dyn FluidBehaviour>> {
-        self.fluids.get(fluid)
+    pub fn get_pumpkin_fluid(&self, fluid_id: u16) -> Option<&Arc<dyn FluidBehaviour>> {
+        self.fluids.get(&fluid_id).or_else(|| {
+            // Still fluids share behavior with their flowing counterpart
+            match fluid_id {
+                2 => self.fluids.get(&1),
+                4 => self.fluids.get(&3),
+                _ => None,
+            }
+        })
     }
 
     pub async fn emits_redstone_power(
@@ -819,7 +940,7 @@ impl BlockRegistry {
         state: &BlockState,
         direction: BlockDirection,
     ) -> bool {
-        let pumpkin_block = self.get_pumpkin_block(block);
+        let pumpkin_block = self.get_pumpkin_block(block.id);
         if let Some(pumpkin_block) = pumpkin_block {
             return pumpkin_block
                 .emits_redstone_power(EmitsRedstonePowerArgs {
@@ -840,7 +961,7 @@ impl BlockRegistry {
         state: &BlockState,
         direction: BlockDirection,
     ) -> u8 {
-        let pumpkin_block = self.get_pumpkin_block(block);
+        let pumpkin_block = self.get_pumpkin_block(block.id);
         if let Some(pumpkin_block) = pumpkin_block {
             return pumpkin_block
                 .get_weak_redstone_power(GetRedstonePowerArgs {
@@ -863,7 +984,7 @@ impl BlockRegistry {
         state: &BlockState,
         direction: BlockDirection,
     ) -> u8 {
-        let pumpkin_block = self.get_pumpkin_block(block);
+        let pumpkin_block = self.get_pumpkin_block(block.id);
         if let Some(pumpkin_block) = pumpkin_block {
             return pumpkin_block
                 .get_strong_redstone_power(GetRedstonePowerArgs {
@@ -876,5 +997,26 @@ impl BlockRegistry {
                 .await;
         }
         0
+    }
+
+    pub async fn get_inside_collision_shape(
+        &self,
+        block: &Block,
+        world: &World,
+        state: &BlockState,
+        position: &BlockPos,
+    ) -> BoundingBox {
+        let pumpkin_block = self.get_pumpkin_block(block.id);
+        if let Some(pumpkin_block) = pumpkin_block {
+            return pumpkin_block
+                .get_inside_collision_shape(GetInsideCollisionShapeArgs {
+                    world,
+                    block,
+                    state,
+                    position,
+                })
+                .await;
+        }
+        BoundingBox::full_block()
     }
 }

@@ -1,18 +1,15 @@
-use crate::plugin::api::{Plugin, PluginMetadata};
+use crate::plugin::{PluginMetadata, api::Plugin, loader::wasm::wasm_host::PluginInitError};
 use std::{any::Any, path::Path, pin::Pin};
 use thiserror::Error;
 
 pub mod native;
+pub mod wasm;
 
 pub type PluginLoadFuture<'a> = Pin<
     Box<
         dyn Future<
                 Output = Result<
-                    (
-                        Box<dyn Plugin>,
-                        PluginMetadata<'static>,
-                        Box<dyn Any + Send + Sync>,
-                    ),
+                    (Box<dyn Plugin>, PluginMetadata, Box<dyn Any + Send + Sync>),
                     LoaderError,
                 >,
             > + Send
@@ -56,4 +53,20 @@ pub enum LoaderError {
 
     #[error("Invalid loader data")]
     InvalidLoaderData,
+
+    #[error(
+        "Plugin was built for an incompatible API version. Please rebuild it against this Pumpkin build."
+    )]
+    ApiVersionMissing,
+
+    #[error(
+        "Plugin API version mismatch (plugin {plugin_version}, server {server_version}). Please rebuild it against this Pumpkin build."
+    )]
+    ApiVersionMismatch {
+        plugin_version: u32,
+        server_version: u32,
+    },
+
+    #[error("Wasm plugin initialization error: {0}")]
+    WasmInitializationError(#[from] PluginInitError),
 }

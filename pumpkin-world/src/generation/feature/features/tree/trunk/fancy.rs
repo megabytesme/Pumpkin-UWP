@@ -8,38 +8,48 @@ use pumpkin_util::{
     math::{position::BlockPos, vector3::Vector3},
     random::{RandomGenerator, RandomImpl},
 };
-use serde::Deserialize;
 
 use super::TrunkPlacer;
-use crate::generation::feature::features::tree::{TreeFeature, TreeNode};
 use crate::generation::proto_chunk::GenerationCache;
+use crate::{
+    generation::{
+        block_state_provider::BlockStateProvider,
+        feature::features::tree::{TreeFeature, TreeNode},
+    },
+    world::BlockRegistryExt,
+};
 
-#[derive(Deserialize)]
 pub struct FancyTrunkPlacer;
 
 impl FancyTrunkPlacer {
     #[expect(clippy::too_many_arguments)]
     pub fn generate<T: GenerationCache>(
+        block_registry: &dyn BlockRegistryExt,
         placer: &TrunkPlacer,
         height: u32,
         start_pos: BlockPos,
         chunk: &mut T,
         random: &mut RandomGenerator,
-        force_dirt: bool,
-        dirt_state: &BlockState,
+        below_trunk_provider: &BlockStateProvider,
         trunk_block: &BlockState,
     ) -> (Vec<TreeNode>, Vec<BlockPos>) {
         let j = height as i32 + 2;
         let k = ((j as f64) * 0.618).floor() as i32;
 
-        placer.set_dirt(chunk, &start_pos.down(), force_dirt, dirt_state);
+        placer.set_dirt(
+            block_registry,
+            chunk,
+            random,
+            &start_pos.down(),
+            below_trunk_provider,
+        );
 
         let l = ((1.382 + (1.0 * (j as f64) / 13.0).powf(2.0)).floor() as i32).min(1);
         let m = start_pos.0.y + k;
         let mut list: Vec<BranchPosition> = Vec::new();
         let mut logs = Vec::new();
 
-        list.push(BranchPosition::new(start_pos, m));
+        list.push(BranchPosition::new(start_pos.up_height(k), m));
 
         for n in (0..=(j - 5)).rev() {
             let f = Self::should_generate_branch(j, n);
@@ -145,7 +155,7 @@ impl FancyTrunkPlacer {
             if make {
                 let axis = Self::get_log_axis(start_pos, block_pos_2.0);
 
-                if TreeFeature::can_replace(block.to_state(), block.to_block()) {
+                if TreeFeature::can_replace(block.to_state(), block.to_block_id()) {
                     let block = Block::from_state_id(trunk_provider.id);
                     let original_props = &block.properties(trunk_provider.id).unwrap().to_props();
                     let axis = axis.to_value();
@@ -167,7 +177,7 @@ impl FancyTrunkPlacer {
                 }
             }
 
-            if TreeFeature::can_replace_or_log(block.to_state(), block.to_block()) {
+            if TreeFeature::can_replace_or_log(block.to_state(), block.to_block_id()) {
                 continue;
             }
             return (false, logs);
@@ -245,8 +255,8 @@ pub struct BranchPosition {
 }
 
 impl BranchPosition {
-    pub fn new(pos: BlockPos, end_y: i32) -> Self {
-        BranchPosition {
+    pub const fn new(pos: BlockPos, end_y: i32) -> Self {
+        Self {
             node: TreeNode {
                 center: pos,
                 foliage_radius: 0,
@@ -256,7 +266,7 @@ impl BranchPosition {
         }
     }
 
-    pub fn get_end_y(&self) -> i32 {
+    pub const fn get_end_y(&self) -> i32 {
         self.end_y
     }
 }

@@ -12,12 +12,8 @@ use crate::block::{
 pub struct RootsBlock;
 
 impl BlockMetadata for RootsBlock {
-    fn namespace(&self) -> &'static str {
-        "minecraft"
-    }
-
-    fn ids(&self) -> &'static [&'static str] {
-        &[Block::WARPED_ROOTS.name, Block::CRIMSON_ROOTS.name]
+    fn ids() -> Box<[u16]> {
+        [Block::WARPED_ROOTS.id, Block::CRIMSON_ROOTS.id].into()
     }
 }
 
@@ -47,10 +43,11 @@ impl BlockBehaviour for RootsBlock {
 impl PlantBlockBase for RootsBlock {
     async fn can_plant_on_top(&self, block_accessor: &dyn BlockAccessor, pos: &BlockPos) -> bool {
         let block_below = block_accessor.get_block(pos).await;
-        block_below.has_tag(&tag::Block::MINECRAFT_NYLIUM)
-            || block_below == &Block::SOUL_SOIL
-            || block_below.has_tag(&tag::Block::MINECRAFT_DIRT)
-            || block_below == &Block::FARMLAND
+        if block_below == &Block::WARPED_ROOTS {
+            block_below.has_tag(&tag::Block::MINECRAFT_SUPPORTS_WARPED_ROOTS)
+        } else {
+            block_below.has_tag(&tag::Block::MINECRAFT_SUPPORTS_CRIMSON_ROOTS)
+        }
     }
 
     async fn can_place_at(&self, block_accessor: &dyn BlockAccessor, block_pos: &BlockPos) -> bool {

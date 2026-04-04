@@ -8,10 +8,10 @@ use crate::item::{ItemBehaviour, ItemMetadata};
 use crate::server::Server;
 use pumpkin_data::entity::EntityType;
 use pumpkin_data::item::Item;
+use pumpkin_data::item_stack::ItemStack;
 use pumpkin_data::{Block, BlockDirection};
 use pumpkin_util::math::position::BlockPos;
-use pumpkin_world::item::ItemStack;
-use uuid::Uuid;
+use pumpkin_util::math::vector3::Vector3;
 
 pub struct EndCrystalItem;
 
@@ -28,6 +28,7 @@ impl ItemBehaviour for EndCrystalItem {
         player: &'a Player,
         location: BlockPos,
         _face: BlockDirection,
+        _cursor_pos: Vector3<f32>,
         _block: &'a Block,
         _server: &'a Server,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
@@ -39,13 +40,7 @@ impl ItemBehaviour for EndCrystalItem {
             }
 
             let location = location.up();
-            let entity = Entity::new(
-                Uuid::new_v4(),
-                world.clone(),
-                location.to_f64(),
-                &EntityType::END_CRYSTAL,
-                false,
-            );
+            let entity = Entity::new(world.clone(), location.to_f64(), &EntityType::END_CRYSTAL);
             let end_crystal = Arc::new(EndCrystalEntity::new(entity));
             world.spawn_entity(end_crystal.clone()).await;
             end_crystal.set_show_bottom(false).await;

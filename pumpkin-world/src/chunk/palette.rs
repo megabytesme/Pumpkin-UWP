@@ -1,7 +1,13 @@
-use std::{collections::HashMap, hash::Hash};
+use std::{collections::HashMap, hash::Hash, iter::repeat_n};
 
-use pumpkin_data::{Block, BlockState, chunk::Biome};
+use pumpkin_data::{
+    Block, BlockState,
+    block_properties::{has_random_ticks, is_air},
+    chunk::Biome,
+    fluid::Fluid,
+};
 use pumpkin_util::encompassing_bits;
+use tracing::warn;
 
 use crate::block::BlockStateCodec;
 
@@ -9,6 +15,13 @@ use super::format::{ChunkSectionBiomes, ChunkSectionBlockStates, PaletteBiomeEnt
 
 /// 3d array indexed by y,z,x
 type AbstractCube<T, const DIM: usize> = [[[T; DIM]; DIM]; DIM];
+
+#[inline]
+#[must_use]
+pub fn has_random_ticking_fluid(state_id: u16) -> bool {
+    Fluid::from_state_id(state_id)
+        .is_some_and(|fluid| Fluid::same_fluid_type(fluid.id, Fluid::LAVA.id))
+}
 
 #[derive(Clone)]
 pub struct HeterogeneousPaletteData<V: Hash + Eq + Copy, const DIM: usize> {
@@ -74,7 +87,7 @@ impl<V: Hash + Eq + Copy + Default, const DIM: usize> PalettedContainer<V, DIM> 
         let mut counts: Vec<u16> = Vec::new();
 
         // Iterate over the flattened cube to populate the palette and counts
-        for val in cube.as_flattened().as_flattened().iter() {
+        for val in cube.as_flattened().as_flattened() {
             if let Some(index) = palette.iter().position(|v| v == val) {
                 // Value already exists, increment its count
                 counts[index] += 1;
@@ -137,21 +150,22 @@ impl<V: Hash + Eq + Copy + Default, const DIM: usize> PalettedContainer<V, DIM> 
         }
     }
 
+    #[must_use]
     pub fn from_palette_and_packed_data(
-        palette_slice: &[V],
+        palette: Vec<V>,
         packed_data: &[i64],
         minimum_bits_per_entry: u8,
     ) -> Self {
-        if palette_slice.is_empty() {
-            log::warn!("No palette data! Defaulting...");
+        if palette.is_empty() {
+            warn!("No palette data! Defaulting...");
             return Self::Homogeneous(V::default());
         }
 
-        if palette_slice.len() == 1 {
-            return Self::Homogeneous(palette_slice[0]);
+        if palette.len() == 1 {
+            return Self::Homogeneous(palette[0]);
         }
 
-        let bits_per_key = encompassing_bits(palette_slice.len()).max(minimum_bits_per_entry);
+        let bits_per_key = encompassing_bits(palette.len()).max(minimum_bits_per_entry);
         let index_mask = (1 << bits_per_key) - 1;
         let keys_per_i64 = 64 / bits_per_key;
 
@@ -174,11 +188,11 @@ impl<V: Hash + Eq + Copy + Default, const DIM: usize> PalettedContainer<V, DIM> 
                 >> (bit_index_in_word as u64 * bits_per_key as u64))
                 & index_mask;
 
-            let value = palette_slice
+            let value = palette
                 .get(lookup_index as usize)
                 .copied()
                 .unwrap_or_else(|| {
-                    log::warn!("Lookup index out of bounds! Defaulting...");
+                    warn!("Lookup index out of bounds! Defaulting...");
                     V::default()
                 });
 
@@ -186,16 +200,16 @@ impl<V: Hash + Eq + Copy + Default, const DIM: usize> PalettedContainer<V, DIM> 
         }
 
         // Now, with all decompressed values, build the counts.
-        let mut counts = vec![0; palette_slice.len()];
+        let mut counts = vec![0; palette.len()];
 
         for &value in &decompressed_values {
             // This is the key optimization: find the index in the palette Vec
             // and increment the corresponding count.
-            if let Some(index) = palette_slice.iter().position(|v| v == &value) {
+            if let Some(index) = palette.iter().position(|v| v == &value) {
                 counts[index] += 1;
             } else {
                 // This case should ideally not happen if the palette is complete.
-                log::warn!("Decompressed value not found in palette!");
+                warn!("Decompressed value not found in palette!");
             }
         }
 
@@ -204,11 +218,9 @@ impl<V: Hash + Eq + Copy + Default, const DIM: usize> PalettedContainer<V, DIM> 
             .as_flattened_mut()
             .copy_from_slice(&decompressed_values);
 
-        let palette_vec: Vec<V> = palette_slice.to_vec();
-
         Self::Heterogeneous(Box::new(HeterogeneousPaletteData {
             cube,
-            palette: palette_vec,
+            palette,
             counts,
         }))
     }
@@ -245,25 +257,10 @@ impl<V: Hash + Eq + Copy + Default, const DIM: usize> PalettedContainer<V, DIM> 
         }
     }
 
-    pub fn for_each<F>(&self, mut f: F)
-    where
-        F: FnMut(V),
-    {
+    pub fn iter(&self) -> Box<dyn Iterator<Item = &V> + '_> {
         match self {
-            Self::Homogeneous(registry_id) => {
-                for _ in 0..Self::VOLUME {
-                    f(*registry_id);
-                }
-            }
-            Self::Heterogeneous(data) => {
-                data.cube
-                    .as_flattened()
-                    .as_flattened()
-                    .iter()
-                    .for_each(|value| {
-                        f(*value);
-                    });
-            }
+            Self::Homogeneous(registry_id) => Box::new(repeat_n(registry_id, Self::VOLUME)),
+            Self::Heterogeneous(data) => Box::new(data.cube.as_flattened().as_flattened().iter()),
         }
     }
 
@@ -282,6 +279,7 @@ impl<V: Default + Hash + Eq + Copy, const DIM: usize> Default for PalettedContai
 }
 
 impl BiomePalette {
+    #[must_use]
     pub fn convert_network(&self) -> NetworkSerialization<u8> {
         match self {
             Self::Homogeneous(registry_id) => NetworkSerialization {
@@ -328,6 +326,7 @@ impl BiomePalette {
         }
     }
 
+    #[must_use]
     pub fn from_disk_nbt(nbt: ChunkSectionBiomes) -> Self {
         let palette = nbt
             .palette
@@ -336,12 +335,13 @@ impl BiomePalette {
             .collect::<Vec<_>>();
 
         Self::from_palette_and_packed_data(
-            &palette,
+            palette,
             nbt.data.as_ref().unwrap_or(&Box::default()),
             BIOME_DISK_MIN_BITS,
         )
     }
 
+    #[must_use]
     pub fn to_disk_nbt(&self) -> ChunkSectionBiomes {
         #[expect(clippy::unnecessary_min_or_max)]
         let bits_per_entry = self.bits_per_entry().max(BIOME_DISK_MIN_BITS);
@@ -363,6 +363,7 @@ impl BiomePalette {
 }
 
 impl BlockPalette {
+    #[must_use]
     pub fn convert_network(&self) -> NetworkSerialization<u16> {
         match self {
             Self::Homogeneous(registry_id) => NetworkSerialization {
@@ -381,13 +382,13 @@ impl BlockPalette {
                         .as_flattened()
                         .chunks(values_per_i64 as usize)
                         .map(|chunk| {
-                            chunk.iter().enumerate().fold(0, |acc, (index, value)| {
+                            chunk.iter().enumerate().fold(0u64, |acc, (index, value)| {
                                 debug_assert!((1 << bits_per_entry) > *value);
 
                                 let packed_offset_index =
-                                    (*value as i64) << (bits_per_entry as u64 * index as u64);
+                                    (*value as u64) << (bits_per_entry as u64 * index as u64);
                                 acc | packed_offset_index
-                            })
+                            }) as i64
                         })
                         .collect();
 
@@ -410,6 +411,7 @@ impl BlockPalette {
         }
     }
 
+    #[must_use]
     pub fn convert_be_network(&self) -> BeNetworkSerialization<u16> {
         match self {
             Self::Homogeneous(registry_id) => BeNetworkSerialization {
@@ -475,30 +477,70 @@ impl BlockPalette {
         }
     }
 
-    pub fn non_air_block_count(&self) -> u16 {
+    /// Check if the entire chunk is filled with only air
+    #[must_use]
+    pub fn has_only_air(&self) -> bool {
+        match self {
+            Self::Homogeneous(id) => is_air(*id),
+            Self::Heterogeneous(data) => data.palette.iter().all(|&id| is_air(id)),
+        }
+    }
+
+    #[must_use]
+    pub fn random_ticking_counts(&self) -> (u16, u16) {
         match self {
             Self::Homogeneous(registry_id) => {
-                if !BlockState::from_id(*registry_id).is_air() {
+                let block_count = if has_random_ticks(*registry_id) {
                     Self::VOLUME as u16
                 } else {
                     0
+                };
+                let fluid_count = if has_random_ticking_fluid(*registry_id) {
+                    Self::VOLUME as u16
+                } else {
+                    0
+                };
+                (block_count, fluid_count)
+            }
+            Self::Heterogeneous(data) => data.palette.iter().zip(data.counts.iter()).fold(
+                (0, 0),
+                |(block_count, fluid_count), (registry_id, count)| {
+                    let block_count = if has_random_ticks(*registry_id) {
+                        block_count.saturating_add(*count)
+                    } else {
+                        block_count
+                    };
+                    let fluid_count = if has_random_ticking_fluid(*registry_id) {
+                        fluid_count.saturating_add(*count)
+                    } else {
+                        fluid_count
+                    };
+                    (block_count, fluid_count)
+                },
+            ),
+        }
+    }
+
+    #[must_use]
+    pub fn non_air_block_count(&self) -> u16 {
+        match self {
+            Self::Homogeneous(registry_id) => {
+                if is_air(*registry_id) {
+                    0
+                } else {
+                    Self::VOLUME as u16
                 }
             }
             Self::Heterogeneous(data) => data
                 .palette
                 .iter()
                 .zip(data.counts.iter())
-                .filter_map(|(registry_id, count)| {
-                    if !BlockState::from_id(*registry_id).is_air() {
-                        Some(*count)
-                    } else {
-                        None
-                    }
-                })
+                .filter_map(|(registry_id, count)| (!is_air(*registry_id)).then_some(*count))
                 .sum(),
         }
     }
 
+    #[must_use]
     pub fn from_disk_nbt(nbt: ChunkSectionBlockStates) -> Self {
         let palette = nbt
             .palette
@@ -507,7 +549,7 @@ impl BlockPalette {
             .collect::<Vec<_>>();
 
         Self::from_palette_and_packed_data(
-            &palette,
+            palette,
             nbt.data.as_ref().unwrap_or(&Box::default()),
             BLOCK_DISK_MIN_BITS,
         )
@@ -544,9 +586,26 @@ impl BlockPalette {
     }
 }
 
+/// Represents the different types of data encoding used in Minecraft's bit-packed chunk sections.
+///
+/// Minecraft uses a "Palette" system to compress chunk data. Instead of sending a full
+/// 15-bit `BlockState` ID for every block, it sends a smaller index (e.g., 4 bits) that
+/// points to a value in these palettes.
 pub enum NetworkPalette<V> {
+    /// **Single Value Palette (Bits per entry: 0)**
+    ///
+    /// Used when an entire chunk section (16x16x16) consists of only one type of block or biome.
+    /// No data array follows this palette in the network buffer.
     Single(V),
+    /// **Indirect Palette (Bits per entry: 1-8 for blocks, 1-3 for biomes)**
+    ///
+    /// A list of unique values present in the section. The data array contains indices
+    /// pointing into this list.
     Indirect(Box<[V]>),
+    /// **Direct Palette (Bits per entry: 15+ for blocks, 6+ for biomes)**
+    ///
+    /// Used when the section is too complex for a small palette. The data array
+    /// contains global Registry IDs directly. No palette list is sent.
     Direct,
 }
 

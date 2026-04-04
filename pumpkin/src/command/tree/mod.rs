@@ -1,12 +1,30 @@
 use super::{CommandExecutor, args::ArgumentConsumer};
 use crate::command::CommandSender;
-use std::{collections::VecDeque, fmt::Debug, sync::Arc};
+use std::{borrow::Cow, collections::VecDeque, fmt::Debug, sync::Arc};
 
 pub mod builder;
 pub mod format;
 
+#[derive(Clone, Copy)]
+pub struct RawArg<'a> {
+    pub value: &'a str,
+    pub start: usize,
+    pub end: usize,
+    pub input: &'a str,
+}
+
+impl Debug for RawArg<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RawArg")
+            .field("value", &self.value)
+            .field("start", &self.start)
+            .field("end", &self.end)
+            .finish()
+    }
+}
+
 /// see [`crate::commands::tree::builder::argument`]
-pub type RawArgs<'a> = Vec<&'a str>;
+pub type RawArgs<'a> = Vec<RawArg<'a>>;
 
 #[derive(Debug, Clone)]
 pub struct Node {
@@ -59,7 +77,7 @@ pub struct CommandTree {
     pub nodes: Vec<Node>,
     pub children: Vec<usize>,
     pub names: Vec<String>,
-    pub description: String,
+    pub description: Cow<'static, str>,
 }
 
 impl CommandTree {

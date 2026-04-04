@@ -3,31 +3,41 @@ use pumpkin_util::{
     math::{int_provider::IntProvider, position::BlockPos},
     random::{RandomGenerator, RandomImpl},
 };
-use serde::Deserialize;
 
-use crate::generation::feature::features::tree::{TreeNode, trunk::TrunkPlacer};
 use crate::generation::proto_chunk::GenerationCache;
+use crate::{
+    generation::{
+        block_state_provider::BlockStateProvider,
+        feature::features::tree::{TreeNode, trunk::TrunkPlacer},
+    },
+    world::BlockRegistryExt,
+};
 
-#[derive(Deserialize)]
 pub struct BendingTrunkPlacer {
-    min_height_for_leaves: u32,
-    bend_length: IntProvider,
+    pub min_height_for_leaves: u32,
+    pub bend_length: IntProvider,
 }
 
 impl BendingTrunkPlacer {
     #[expect(clippy::too_many_arguments)]
     pub fn generate<T: GenerationCache>(
         &self,
+        block_registry: &dyn BlockRegistryExt,
         placer: &TrunkPlacer,
         height: u32,
         start_pos: BlockPos,
         chunk: &mut T,
         random: &mut RandomGenerator,
-        force_dirt: bool,
-        dirt_state: &BlockState,
+        below_trunk_provider: &BlockStateProvider,
         trunk_block: &BlockState,
     ) -> (Vec<TreeNode>, Vec<BlockPos>) {
-        placer.set_dirt(chunk, &start_pos.down(), force_dirt, dirt_state);
+        placer.set_dirt(
+            block_registry,
+            chunk,
+            random,
+            &start_pos.down(),
+            below_trunk_provider,
+        );
 
         // TODO: make this random
         let random_direction = BlockDirection::North;

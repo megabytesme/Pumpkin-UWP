@@ -11,12 +11,11 @@ use pumpkin_data::block_properties::{
 };
 use pumpkin_data::entity::EntityType;
 use pumpkin_data::item::Item;
+use pumpkin_data::item_stack::ItemStack;
 use pumpkin_data::tag::Taggable;
 use pumpkin_data::{Block, tag};
 use pumpkin_util::math::position::BlockPos;
 use pumpkin_util::math::vector3::Vector3;
-use pumpkin_world::item::ItemStack;
-use uuid::Uuid;
 
 pub struct MinecartItem;
 
@@ -55,6 +54,7 @@ impl ItemBehaviour for MinecartItem {
         player: &'a Player,
         location: BlockPos,
         _face: BlockDirection,
+        _cursor_pos: Vector3<f32>,
         block: &'a Block,
         _server: &'a Server,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
@@ -78,11 +78,9 @@ impl ItemBehaviour for MinecartItem {
             let entity_type = Self::item_to_entity(item.item);
             let pos = location.to_f64();
             let entity = Arc::new(Entity::new(
-                Uuid::new_v4(),
                 world.clone(),
                 Vector3::new(pos.x, pos.y + 0.0625 + height, pos.z),
                 entity_type,
-                false,
             ));
             world.spawn_entity(entity).await;
         })

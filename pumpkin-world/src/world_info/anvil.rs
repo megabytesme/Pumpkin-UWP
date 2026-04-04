@@ -1,9 +1,10 @@
 use std::{
-    fs::OpenOptions,
+    fs::File,
     io::{Cursor, Read},
     path::Path,
     time::{SystemTime, UNIX_EPOCH},
 };
+use tracing::error;
 
 use flate2::{Compression, read::GzDecoder, write::GzEncoder};
 use serde::{Deserialize, Serialize};
@@ -38,17 +39,17 @@ fn check_file_data_version(raw_nbt: &[u8]) -> Result<(), WorldInfoError> {
 
     let info: LevelDat = pumpkin_nbt::from_bytes(Cursor::new(raw_nbt))
         .map_err(|e|{
-            log::error!("The level.dat file does not have a data version! This means it is either corrupt or very old (read unsupported)");
+            error!("The level.dat file does not have a data version! This means it is either corrupt or very old (read unsupported)");
             WorldInfoError::DeserializationError(e.to_string())})?;
 
     let data_version = info.data.data_version;
 
-    if !(MINIMUM_SUPPORTED_WORLD_DATA_VERSION..=MAXIMUM_SUPPORTED_WORLD_DATA_VERSION)
+    if (MINIMUM_SUPPORTED_WORLD_DATA_VERSION..=MAXIMUM_SUPPORTED_WORLD_DATA_VERSION)
         .contains(&data_version)
     {
-        Err(WorldInfoError::UnsupportedDataVersion(data_version))
-    } else {
         Ok(())
+    } else {
+        Err(WorldInfoError::UnsupportedDataVersion(data_version))
     }
 }
 
@@ -65,16 +66,16 @@ fn check_file_level_version(raw_nbt: &[u8]) -> Result<(), WorldInfoError> {
 
     let info: LevelDat = pumpkin_nbt::from_bytes(Cursor::new(raw_nbt))
         .map_err(|e|{
-            log::error!("The level.dat file does not have a level version! This means it is either corrupt or very old (read unsupported)");
+            error!("The level.dat file does not have a level version! This means it is either corrupt or very old (read unsupported)");
             WorldInfoError::DeserializationError(e.to_string())})?;
 
     let level_version = info.data.version;
 
-    if !(MINIMUM_SUPPORTED_LEVEL_VERSION..=MAXIMUM_SUPPORTED_LEVEL_VERSION).contains(&level_version)
+    if (MINIMUM_SUPPORTED_LEVEL_VERSION..=MAXIMUM_SUPPORTED_LEVEL_VERSION).contains(&level_version)
     {
-        Err(WorldInfoError::UnsupportedLevelVersion(level_version))
-    } else {
         Ok(())
+    } else {
+        Err(WorldInfoError::UnsupportedLevelVersion(level_version))
     }
 }
 
@@ -82,10 +83,9 @@ impl WorldInfoReader for AnvilLevelInfo {
     fn read_world_info(&self, level_folder: &Path) -> Result<LevelData, WorldInfoError> {
         let path = level_folder.join(LEVEL_DAT_FILE_NAME);
 
-        let world_info_file = OpenOptions::new().read(true).open(path)?;
-        let mut compression_reader = GzDecoder::new(world_info_file);
+        let world_info_file = File::open(path)?;
         let mut buf = Vec::new();
-        let _ = compression_reader.read_to_end(&mut buf)?;
+        GzDecoder::new(world_info_file).read_to_end(&mut buf)?;
 
         check_file_data_version(&buf)?;
         check_file_level_version(&buf)?;
@@ -114,11 +114,7 @@ impl WorldInfoWriter for AnvilLevelInfo {
 
         // open file
         let path = level_folder.join(LEVEL_DAT_FILE_NAME);
-        let world_info_file = OpenOptions::new()
-            .truncate(true)
-            .create(true)
-            .write(true)
-            .open(path)?;
+        let world_info_file = File::create(path)?;
 
         // write compressed data into file
         let compression_writer = GzEncoder::new(world_info_file, Compression::best());
@@ -159,7 +155,7 @@ mod test {
     use super::{AnvilLevelInfo, LEVEL_DAT_FILE_NAME, LevelDat, WorldInfoReader, WorldInfoWriter};
 
     #[test]
-    fn test_preserve_level_dat_seed() {
+    fn preserve_level_dat_seed() {
         let seed = 1337;
 
         let data = LevelData::default(Seed(1337));
@@ -236,7 +232,8 @@ mod test {
             spawn_x: 160,
             spawn_y: 70,
             spawn_z: 160,
-            spawn_angle: 0.0,
+            spawn_yaw: 0.0,
+            spawn_pitch: 0.0,
             level_version: 19133,
             world_version: WorldVersion {
                 name: "1.21.4".to_string(),
@@ -248,7 +245,7 @@ mod test {
     });
 
     #[test]
-    fn test_deserialize_level_dat() {
+    fn deserialize_level_dat() {
         let raw_compressed_nbt = fs::read("assets/level_1_21_4.dat").unwrap();
         assert!(!raw_compressed_nbt.is_empty());
 
@@ -261,7 +258,7 @@ mod test {
     }
 
     #[test]
-    fn test_serialize_level_dat() {
+    fn serialize_level_dat() {
         let mut serialized = Vec::new();
         to_bytes(&*LEVEL_DAT, &mut serialized).expect("Failed to encode to bytes");
 

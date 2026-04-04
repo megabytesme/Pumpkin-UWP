@@ -1,9 +1,8 @@
+use pumpkin_data::block_properties::is_air;
 use pumpkin_data::{Block, BlockDirection};
-use pumpkin_util::{HeightMap, include_json_static};
-use serde::Deserialize;
+use pumpkin_util::HeightMap;
 use std::collections::HashMap;
 use std::iter;
-use std::ops::Deref;
 use std::sync::LazyLock;
 
 use pumpkin_util::biome::FOLIAGE_NOISE;
@@ -20,12 +19,9 @@ use crate::world::BlockRegistryExt;
 
 use super::configured_features::{CONFIGURED_FEATURES, ConfiguredFeature};
 
-pub static PLACED_FEATURES: LazyLock<HashMap<String, PlacedFeature>> = LazyLock::new(
-    || include_json_static!("../../../../assets/placed_feature.json", HashMap<String, PlacedFeature>),
-);
+pub static PLACED_FEATURES: LazyLock<HashMap<String, PlacedFeature>> =
+    LazyLock::new(build_placed_features);
 
-#[derive(Deserialize)]
-#[serde(untagged)]
 pub enum PlacedFeatureWrapper {
     Direct(PlacedFeature),
     Named(String),
@@ -42,15 +38,12 @@ impl PlacedFeatureWrapper {
     }
 }
 
-#[derive(Deserialize)]
 pub struct PlacedFeature {
     /// The name of the configuired feature
-    feature: Feature,
-    placement: Vec<PlacementModifier>,
+    pub feature: Feature,
+    pub placement: Vec<PlacementModifier>,
 }
 
-#[derive(Deserialize)]
-#[serde(untagged)]
 pub enum Feature {
     Named(String),
     Inlined(Box<ConfiguredFeature>),
@@ -91,7 +84,7 @@ impl PlacedFeature {
         let feature = match &self.feature {
             Feature::Named(name) => CONFIGURED_FEATURES
                 .get(name.strip_prefix("minecraft:").unwrap_or(name))
-                .unwrap(),
+                .expect("Name: {name} not found"),
             Feature::Inlined(feature) => feature,
         };
 
@@ -113,39 +106,22 @@ impl PlacedFeature {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(tag = "type")]
 pub enum PlacementModifier {
-    #[serde(rename = "minecraft:block_predicate_filter")]
     BlockPredicateFilter(BlockFilterPlacementModifier),
-    #[serde(rename = "minecraft:rarity_filter")]
     RarityFilter(RarityFilterPlacementModifier),
-    #[serde(rename = "minecraft:surface_relative_threshold_filter")]
     SurfaceRelativeThresholdFilter(SurfaceThresholdFilterPlacementModifier),
-    #[serde(rename = "minecraft:surface_water_depth_filter")]
     SurfaceWaterDepthFilter(SurfaceWaterDepthFilterPlacementModifier),
-    #[serde(rename = "minecraft:biome")]
     Biome(BiomePlacementModifier),
-    #[serde(rename = "minecraft:count")]
     Count(CountPlacementModifier),
-    #[serde(rename = "minecraft:noise_based_count")]
     NoiseBasedCount(NoiseBasedCountPlacementModifier),
-    #[serde(rename = "minecraft:noise_threshold_count")]
     NoiseThresholdCount(NoiseThresholdCountPlacementModifier),
-    #[serde(rename = "minecraft:count_on_every_layer")]
     CountOnEveryLayer(CountOnEveryLayerPlacementModifier),
-    #[serde(rename = "minecraft:environment_scan")]
     EnvironmentScan(EnvironmentScanPlacementModifier),
-    #[serde(rename = "minecraft:heightmap")]
     Heightmap(HeightmapPlacementModifier),
-    #[serde(rename = "minecraft:height_range")]
     HeightRange(HeightRangePlacementModifier),
-    #[serde(rename = "minecraft:in_square")]
     InSquare(SquarePlacementModifier),
-    #[serde(rename = "minecraft:random_offset")]
     RandomOffset(RandomOffsetPlacementModifier),
-    #[serde(rename = "minecraft:fixed_placement")]
-    FixedPlacement,
+    FixedPlacement(Vec<BlockPos>),
 }
 
 impl PlacementModifier {
@@ -161,50 +137,39 @@ impl PlacementModifier {
         pos: BlockPos,
     ) -> Box<dyn Iterator<Item = BlockPos>> {
         match self {
-            PlacementModifier::BlockPredicateFilter(modifier) => {
+            Self::BlockPredicateFilter(modifier) => {
                 modifier.get_positions(block_registry, chunk, feature, random, pos)
             }
-            PlacementModifier::RarityFilter(modifier) => {
+            Self::RarityFilter(modifier) => {
                 modifier.get_positions(block_registry, chunk, feature, random, pos)
             }
-            PlacementModifier::SurfaceRelativeThresholdFilter(modifier) => {
+            Self::SurfaceRelativeThresholdFilter(modifier) => {
                 modifier.get_positions(block_registry, chunk, feature, random, pos)
             }
-            PlacementModifier::SurfaceWaterDepthFilter(modifier) => {
+            Self::SurfaceWaterDepthFilter(modifier) => {
                 modifier.get_positions(block_registry, chunk, feature, random, pos)
             }
-            PlacementModifier::Biome(modifier) => {
+            Self::Biome(modifier) => {
                 modifier.get_positions(block_registry, chunk, feature, random, pos)
             }
-            PlacementModifier::Count(modifier) => modifier.get_positions(random, pos),
-            PlacementModifier::NoiseBasedCount(modifier) => {
-                Box::new(modifier.get_positions(random, pos))
-            }
-            PlacementModifier::NoiseThresholdCount(modifier) => modifier.get_positions(random, pos),
-            PlacementModifier::CountOnEveryLayer(modifier) => {
-                modifier.get_positions(random, chunk, pos)
-            }
-            PlacementModifier::EnvironmentScan(modifier) => {
-                modifier.get_positions(chunk, block_registry, pos)
-            }
-            PlacementModifier::Heightmap(modifier) => {
-                modifier.get_positions(chunk, min_y, height, random, pos)
-            }
-            PlacementModifier::HeightRange(modifier) => {
-                modifier.get_positions(min_y, height, random, pos)
-            }
-            PlacementModifier::InSquare(_) => SquarePlacementModifier::get_positions(random, pos),
-            PlacementModifier::RandomOffset(modifier) => modifier.get_positions(random, pos),
-            PlacementModifier::FixedPlacement => Box::new(iter::empty()),
+            Self::Count(modifier) => modifier.get_positions(random, pos),
+            Self::NoiseBasedCount(modifier) => Box::new(modifier.get_positions(random, pos)),
+            Self::NoiseThresholdCount(modifier) => modifier.get_positions(random, pos),
+            Self::CountOnEveryLayer(modifier) => modifier.get_positions(random, chunk, pos),
+            Self::EnvironmentScan(modifier) => modifier.get_positions(chunk, block_registry, pos),
+            Self::Heightmap(modifier) => modifier.get_positions(chunk, min_y, height, random, pos),
+            Self::HeightRange(modifier) => modifier.get_positions(min_y, height, random, pos),
+            Self::InSquare(_) => SquarePlacementModifier::get_positions(random, pos),
+            Self::RandomOffset(modifier) => modifier.get_positions(random, pos),
+            Self::FixedPlacement(positions) => Box::new(positions.clone().into_iter()),
         }
     }
 }
 
-#[derive(Deserialize)]
 pub struct NoiseBasedCountPlacementModifier {
-    noise_to_count_ratio: i32,
-    noise_factor: f64,
-    noise_offset: f64,
+    pub noise_to_count_ratio: i32,
+    pub noise_factor: f64,
+    pub noise_offset: f64,
 }
 
 impl CountPlacementModifierBase for NoiseBasedCountPlacementModifier {
@@ -220,11 +185,10 @@ impl CountPlacementModifierBase for NoiseBasedCountPlacementModifier {
     }
 }
 
-#[derive(Deserialize)]
 pub struct NoiseThresholdCountPlacementModifier {
-    noise_level: f64,
-    below_noise: i32,
-    above_noise: i32,
+    pub noise_level: f64,
+    pub below_noise: i32,
+    pub above_noise: i32,
 }
 
 impl CountPlacementModifierBase for NoiseThresholdCountPlacementModifier {
@@ -238,12 +202,11 @@ impl CountPlacementModifierBase for NoiseThresholdCountPlacementModifier {
     }
 }
 
-#[derive(Deserialize)]
 pub struct EnvironmentScanPlacementModifier {
-    direction_of_search: BlockDirection,
-    target_condition: BlockPredicate,
-    allowed_search_condition: Option<BlockPredicate>,
-    max_steps: i32,
+    pub direction_of_search: BlockDirection,
+    pub target_condition: BlockPredicate,
+    pub allowed_search_condition: Option<BlockPredicate>,
+    pub max_steps: i32,
 }
 
 impl EnvironmentScanPlacementModifier {
@@ -284,10 +247,9 @@ impl EnvironmentScanPlacementModifier {
     }
 }
 
-#[derive(Deserialize)]
 pub struct RandomOffsetPlacementModifier {
-    xz_spread: IntProvider,
-    y_spread: IntProvider,
+    pub xz_spread: IntProvider,
+    pub y_spread: IntProvider,
 }
 
 impl RandomOffsetPlacementModifier {
@@ -303,9 +265,8 @@ impl RandomOffsetPlacementModifier {
     }
 }
 
-#[derive(Deserialize)]
 pub struct CountOnEveryLayerPlacementModifier {
-    count: IntProvider,
+    pub count: IntProvider,
 }
 
 impl CountOnEveryLayerPlacementModifier {
@@ -353,7 +314,7 @@ impl CountOnEveryLayerPlacementModifier {
 
             if !Self::blocks_spawn(&next_block_state)
                 && Self::blocks_spawn(&current_block_state)
-                && next_block_state.to_block() != &Block::BEDROCK
+                && next_block_state.to_block_id() != Block::BEDROCK
             {
                 if found_count == target_y {
                     return mutable_pos.0.y + 1;
@@ -366,14 +327,13 @@ impl CountOnEveryLayerPlacementModifier {
     }
 
     fn blocks_spawn(state: &RawBlockState) -> bool {
-        let block = state.to_block();
-        state.to_state().is_air() || block == &Block::WATER || block == &Block::LAVA
+        let block = state.to_block_id();
+        is_air(state.0) || block == Block::WATER || block == Block::LAVA
     }
 }
 
-#[derive(Deserialize)]
 pub struct BlockFilterPlacementModifier {
-    predicate: BlockPredicate,
+    pub predicate: BlockPredicate,
 }
 
 impl ConditionalPlacementModifier for BlockFilterPlacementModifier {
@@ -389,11 +349,10 @@ impl ConditionalPlacementModifier for BlockFilterPlacementModifier {
     }
 }
 
-#[derive(Deserialize)]
 pub struct SurfaceThresholdFilterPlacementModifier {
-    heightmap: HeightMap,
-    min_inclusive: Option<i32>,
-    max_inclusive: Option<i32>,
+    pub heightmap: HeightMap,
+    pub min_inclusive: Option<i32>,
+    pub max_inclusive: Option<i32>,
 }
 
 impl ConditionalPlacementModifier for SurfaceThresholdFilterPlacementModifier {
@@ -412,9 +371,8 @@ impl ConditionalPlacementModifier for SurfaceThresholdFilterPlacementModifier {
     }
 }
 
-#[derive(Deserialize)]
 pub struct RarityFilterPlacementModifier {
-    chance: u32,
+    pub chance: u32,
 }
 
 impl ConditionalPlacementModifier for RarityFilterPlacementModifier {
@@ -430,7 +388,6 @@ impl ConditionalPlacementModifier for RarityFilterPlacementModifier {
     }
 }
 
-#[derive(Deserialize)]
 pub struct SquarePlacementModifier;
 
 impl SquarePlacementModifier {
@@ -444,9 +401,8 @@ impl SquarePlacementModifier {
     }
 }
 
-#[derive(Deserialize)]
 pub struct CountPlacementModifier {
-    count: IntProvider,
+    pub count: IntProvider,
 }
 
 impl CountPlacementModifierBase for CountPlacementModifier {
@@ -455,9 +411,8 @@ impl CountPlacementModifierBase for CountPlacementModifier {
     }
 }
 
-#[derive(Deserialize)]
 pub struct SurfaceWaterDepthFilterPlacementModifier {
-    max_water_depth: i32,
+    pub max_water_depth: i32,
 }
 
 impl ConditionalPlacementModifier for SurfaceWaterDepthFilterPlacementModifier {
@@ -475,7 +430,6 @@ impl ConditionalPlacementModifier for SurfaceWaterDepthFilterPlacementModifier {
     }
 }
 
-#[derive(Deserialize)]
 pub struct BiomePlacementModifier;
 
 impl ConditionalPlacementModifier for BiomePlacementModifier {
@@ -487,12 +441,11 @@ impl ConditionalPlacementModifier for BiomePlacementModifier {
         _random: &mut RandomGenerator,
         pos: BlockPos,
     ) -> bool {
-        // we check if the current feature can be applied to the biome at the pos
         let name = format!("minecraft:{this_feature}");
         let biome = chunk.get_biome_for_terrain_gen(pos.0.x, pos.0.y, pos.0.z);
 
         for feature in biome.features {
-            if feature.contains(&name.deref()) {
+            if feature.contains(&&*name) {
                 return true;
             }
         }
@@ -500,9 +453,8 @@ impl ConditionalPlacementModifier for BiomePlacementModifier {
     }
 }
 
-#[derive(Deserialize)]
 pub struct HeightRangePlacementModifier {
-    height: HeightProvider,
+    pub height: HeightProvider,
 }
 
 impl HeightRangePlacementModifier {
@@ -519,9 +471,8 @@ impl HeightRangePlacementModifier {
     }
 }
 
-#[derive(Deserialize)]
 pub struct HeightmapPlacementModifier {
-    heightmap: HeightMap,
+    pub heightmap: HeightMap,
 }
 
 impl HeightmapPlacementModifier {
@@ -581,3 +532,8 @@ pub trait ConditionalPlacementModifier {
         pos: BlockPos,
     ) -> bool;
 }
+
+// generated code is now placed alongside other codegen outputs
+// in `src/generated` so it’s easier to find when upgrading MC versions.
+// the path is relative to this file (up two levels to reach `src`).
+include!("../../../../pumpkin-data/src/generated/placed_features_generated.rs");

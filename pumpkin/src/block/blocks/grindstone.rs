@@ -1,6 +1,6 @@
 use pumpkin_data::{
     Block, BlockDirection, HorizontalFacingExt,
-    block_properties::{BlockFace, BlockProperties, GrindstoneLikeProperties},
+    block_properties::{AttachFace, BlockProperties, GrindstoneLikeProperties},
 };
 use pumpkin_macros::pumpkin_block;
 use pumpkin_util::math::position::BlockPos;
@@ -29,7 +29,12 @@ impl BlockBehaviour for GrindstoneBlock {
 
     fn can_place_at<'a>(&'a self, args: CanPlaceAtArgs<'a>) -> BlockFuture<'a, bool> {
         Box::pin(async move {
-            WallMountedBlock::can_place_at(self, args.block_accessor, args.position, args.direction)
+            // Use the provided direction, or fallback to the current state's direction if missing
+            let direction = args
+                .direction
+                .unwrap_or_else(|| self.get_direction(args.state.id, args.block));
+
+            WallMountedBlock::can_place_at(self, args.block_accessor, args.position, direction)
                 .await
         })
     }
@@ -55,9 +60,9 @@ impl WallMountedBlock for GrindstoneBlock {
     fn get_direction(&self, state_id: BlockStateId, block: &Block) -> BlockDirection {
         let props = GrindstoneLikeProperties::from_state_id(state_id, block);
         match props.face {
-            BlockFace::Floor => BlockDirection::Up,
-            BlockFace::Ceiling => BlockDirection::Down,
-            BlockFace::Wall => props.facing.to_block_direction(),
+            AttachFace::Floor => BlockDirection::Up,
+            AttachFace::Ceiling => BlockDirection::Down,
+            AttachFace::Wall => props.facing.to_block_direction(),
         }
     }
 }

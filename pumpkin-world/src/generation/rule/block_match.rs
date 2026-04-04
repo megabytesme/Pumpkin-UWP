@@ -1,15 +1,14 @@
-use pumpkin_data::{Block, BlockState};
-use serde::Deserialize;
+use pumpkin_data::Block;
 
-#[derive(Deserialize)]
+use crate::block::RawBlockState;
+
 pub struct BlockMatchRuleTest {
-    // This should be a Block codec, so this is wrong
-    block: String,
+    pub block: Block,
 }
 
 impl BlockMatchRuleTest {
-    pub fn test(&self, state: &BlockState) -> bool {
-        Block::from_state_id(state.id).name
-            == self.block.strip_prefix("minecraft:").unwrap_or(&self.block)
+    #[must_use]
+    pub fn test(&self, state: RawBlockState) -> bool {
+        state.to_block().name == self.block.name
     }
 }

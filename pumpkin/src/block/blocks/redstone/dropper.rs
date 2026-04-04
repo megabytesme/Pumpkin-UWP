@@ -7,10 +7,10 @@ use crate::block::{
 use crate::entity::Entity;
 use crate::entity::item::ItemEntity;
 
-use pumpkin_data::FacingExt;
 use pumpkin_data::block_properties::{BlockProperties, Facing};
 use pumpkin_data::entity::EntityType;
 use pumpkin_data::world::WorldEvent;
+use pumpkin_data::{FacingExt, translation};
 use pumpkin_inventory::generic_container_screen_handler::create_generic_3x3;
 use pumpkin_inventory::player::player_inventory::PlayerInventory;
 use pumpkin_inventory::screen_handler::{
@@ -25,10 +25,9 @@ use pumpkin_world::block::entities::hopper::HopperBlockEntity;
 use pumpkin_world::inventory::Inventory;
 use pumpkin_world::tick::TickPriority;
 use pumpkin_world::world::BlockFlags;
-use rand::{Rng, rng};
+use rand::{Rng, RngExt, rng};
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use uuid::Uuid;
 
 struct DropperScreenFactory(Arc<dyn Inventory>);
 
@@ -48,7 +47,7 @@ impl ScreenHandlerFactory for DropperScreenFactory {
     }
 
     fn get_display_name(&self) -> TextComponent {
-        TextComponent::translate("container.dropper", &[])
+        TextComponent::translate(translation::CONTAINER_DROPPER, &[])
     }
 }
 
@@ -58,7 +57,7 @@ pub struct DropperBlock;
 type DispenserLikeProperties = pumpkin_data::block_properties::DispenserLikeProperties;
 
 fn triangle<R: Rng>(rng: &mut R, min: f64, max: f64) -> f64 {
-    min + (rng.random::<f64>() - rng.random::<f64>()) * max
+    (rng.random::<f64>() - rng.random::<f64>()).mul_add(max, min)
 }
 
 const fn to_normal(facing: Facing) -> Vector3<f64> {
@@ -90,7 +89,7 @@ impl BlockBehaviour for DropperBlock {
                 && let Some(inventory) = block_entity.get_inventory()
             {
                 args.player
-                    .open_handled_screen(&DropperScreenFactory(inventory))
+                    .open_handled_screen(&DropperScreenFactory(inventory), Some(*args.position))
                     .await;
             }
             BlockActionResult::Success
@@ -200,14 +199,8 @@ impl BlockBehaviour for DropperBlock {
                         Facing::Up | Facing::Down => 0.125,
                         _ => 0.15625,
                     };
-                    let entity = Entity::new(
-                        Uuid::new_v4(),
-                        args.world.clone(),
-                        position,
-                        &EntityType::ITEM,
-                        false,
-                    );
-                    let rd = rng().random::<f64>() * 0.1 + 0.2;
+                    let entity = Entity::new(args.world.clone(), position, &EntityType::ITEM);
+                    let rd = rng().random::<f64>().mul_add(0.1, 0.2);
                     let velocity = Vector3::new(
                         triangle(&mut rng(), facing.x * rd, 0.017_227_5 * 6.),
                         triangle(&mut rng(), 0.2, 0.017_227_5 * 6.),
@@ -218,18 +211,18 @@ impl BlockBehaviour for DropperBlock {
                     );
                     args.world.spawn_entity(item_entity).await;
                     args.world
-                        .sync_world_event(WorldEvent::DispenserDispenses, *args.position, 0)
+                        .sync_world_event(WorldEvent::SoundDispenserDispense, *args.position, 0)
                         .await;
                     args.world
                         .sync_world_event(
-                            WorldEvent::DispenserActivated,
+                            WorldEvent::SoundDispenserProjectileLaunch,
                             *args.position,
                             to_data3d(props.facing),
                         )
                         .await;
                 } else {
                     args.world
-                        .sync_world_event(WorldEvent::DispenserFails, *args.position, 0)
+                        .sync_world_event(WorldEvent::SoundDispenserFail, *args.position, 0)
                         .await;
                 }
             }

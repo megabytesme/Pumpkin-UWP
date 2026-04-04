@@ -3,7 +3,7 @@ use std::sync::{Arc, atomic::Ordering};
 use pumpkin_data::{
     Block, BlockDirection, BlockState,
     block_properties::{
-        BlockProperties, ComparatorLikeProperties, ComparatorMode, HorizontalFacing,
+        BlockProperties, ComparatorLikeProperties, HorizontalFacing, ModeComparator,
     },
     entity::EntityType,
 };
@@ -67,7 +67,7 @@ impl BlockBehaviour for ComparatorBlock {
                 self,
                 args.world,
                 *args.position,
-                BlockState::from_id(args.state_id).id,
+                args.state_id,
                 args.block,
             )
             .await;
@@ -230,7 +230,7 @@ impl RedstoneGateBlock<ComparatorLikeProperties> for ComparatorBlock {
                 true
             } else {
                 let props = ComparatorLikeProperties::from_state_id(state.id, block);
-                i == j && props.mode == ComparatorMode::Compare
+                i == j && props.mode == ModeComparator::Compare
             }
         })
     }
@@ -254,7 +254,7 @@ impl RedstoneGateBlock<ComparatorLikeProperties> for ComparatorBlock {
             let (source_block, source_state) = world.get_block_and_state(&source_pos).await;
 
             // Note: .get_comparator_output is assumed to be an async method returning Option<u8>
-            if let Some(pumpkin_block) = world.block_registry.get_pumpkin_block(source_block)
+            if let Some(pumpkin_block) = world.block_registry.get_pumpkin_block(source_block.id)
                 && let Some(level) = pumpkin_block
                     .get_comparator_output(GetComparatorOutputArgs {
                         world,
@@ -272,11 +272,9 @@ impl RedstoneGateBlock<ComparatorLikeProperties> for ComparatorBlock {
                 let (source_block, source_state) = world.get_block_and_state(&source_pos).await;
 
                 // Note: self.get_attached_itemframe_level is assumed to be an async method
-                let itemframe_level = self
-                    .get_attached_itemframe_level(world, facing, source_pos)
-                    .await;
+                let itemframe_level = Self::get_attached_itemframe_level(world, facing, source_pos);
                 let block_level = if let Some(pumpkin_block) =
-                    world.block_registry.get_pumpkin_block(source_block)
+                    world.block_registry.get_pumpkin_block(source_block.id)
                 {
                     pumpkin_block
                         .get_comparator_output(GetComparatorOutputArgs {
@@ -311,8 +309,8 @@ impl ComparatorBlock {
         block: &Block,
     ) {
         props.mode = match props.mode {
-            ComparatorMode::Compare => ComparatorMode::Subtract,
-            ComparatorMode::Subtract => ComparatorMode::Compare,
+            ModeComparator::Compare => ModeComparator::Subtract,
+            ModeComparator::Subtract => ModeComparator::Compare,
         };
         let state_id = props.to_state_id(block);
         world
@@ -338,22 +336,20 @@ impl ComparatorBlock {
             return 0;
         }
         let props = ComparatorLikeProperties::from_state_id(state.id, block);
-        if props.mode == ComparatorMode::Subtract {
+        if props.mode == ModeComparator::Subtract {
             power - sub_power
         } else {
             power
         }
     }
 
-    async fn get_attached_itemframe_level(
-        &self,
+    fn get_attached_itemframe_level(
         world: &World,
         facing: HorizontalFacing,
         pos: BlockPos,
     ) -> Option<u8> {
         let mut itemframes = world
             .get_entities_at_box(&BoundingBox::from_block(&pos))
-            .await
             .into_iter()
             .filter(|entity| {
                 entity.get_entity().entity_type == &EntityType::ITEM_FRAME
@@ -384,7 +380,7 @@ impl ComparatorBlock {
                 .store(future_level as u8, Ordering::Relaxed);
         }
         let mut props = ComparatorLikeProperties::from_state_id(state.id, block);
-        if now_level != future_level || props.mode == ComparatorMode::Compare {
+        if now_level != future_level || props.mode == ModeComparator::Compare {
             let future_power = self.has_power(world, pos, state, block).await;
             let now_power = props.powered;
             if now_power && !future_power {

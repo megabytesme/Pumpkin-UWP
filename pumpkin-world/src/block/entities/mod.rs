@@ -3,19 +3,26 @@ use std::{any::Any, sync::Arc};
 
 use barrel::BarrelBlockEntity;
 use bed::BedBlockEntity;
+use brewing_stand::BrewingStandBlockEntity;
 use chest::ChestBlockEntity;
 use comparator::ComparatorBlockEntity;
+use daylight_detector::DaylightDetectorBlockEntity;
 use end_portal::EndPortalBlockEntity;
 use furnace::FurnaceBlockEntity;
+use furnace_like_block_entity::ExperienceContainer;
 use piston::PistonBlockEntity;
 use pumpkin_data::{Block, block_properties::BLOCK_ENTITY_TYPES};
 use pumpkin_nbt::compound::NbtCompound;
 use pumpkin_util::math::position::BlockPos;
 use sign::SignBlockEntity;
+use trapped_chest::TrappedChestBlockEntity;
 
+use crate::block::entities::bell::BellBlockEntity;
 use crate::block::entities::blasting_furnace::BlastingFurnaceBlockEntity;
+use crate::block::entities::command_block::CommandBlockEntity;
 use crate::block::entities::ender_chest::EnderChestBlockEntity;
 use crate::block::entities::hopper::HopperBlockEntity;
+use crate::block::entities::jukebox::JukeboxBlockEntity;
 use crate::block::entities::mob_spawner::MobSpawnerBlockEntity;
 use crate::block::entities::shulker_box::ShulkerBoxBlockEntity;
 use crate::block::entities::smoker::SmokerBlockEntity;
@@ -26,25 +33,31 @@ use crate::{
 
 pub mod barrel;
 pub mod bed;
+pub mod bell;
 pub mod blasting_furnace;
+pub mod brewing_stand;
 pub mod chest;
+pub mod chest_like_block_entity;
 pub mod chiseled_bookshelf;
 pub mod command_block;
 pub mod comparator;
+pub mod daylight_detector;
 pub mod dropper;
 pub mod end_portal;
 pub mod ender_chest;
 pub mod furnace;
 pub mod furnace_like_block_entity;
 pub mod hopper;
+pub mod jukebox;
 pub mod mob_spawner;
 pub mod piston;
 pub mod shulker_box;
 pub mod sign;
 pub mod smoker;
+pub mod trapped_chest;
 
 //TODO: We need a mark_dirty for chests
-pub trait BlockEntity: Send + Sync {
+pub trait BlockEntity: Any + Send + Sync {
     fn write_nbt<'a>(
         &'a self,
         nbt: &'a mut NbtCompound,
@@ -54,7 +67,7 @@ pub trait BlockEntity: Send + Sync {
         Self: Sized;
     fn tick<'a>(
         &'a self,
-        _world: Arc<dyn SimpleWorld>,
+        _world: &'a Arc<dyn SimpleWorld>,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         Box::pin(async {})
     }
@@ -77,13 +90,16 @@ pub trait BlockEntity: Send + Sync {
         pumpkin_data::block_properties::BLOCK_ENTITY_TYPES
             .iter()
             .position(|block_entity_name| {
-                *block_entity_name == self.resource_location().split(":").last().unwrap()
+                *block_entity_name == self.resource_location().split(':').next_back().unwrap()
             })
             .unwrap() as u32
     }
+
+    /// Obtain NBT data for sending to the client in [`ChunkData`](crate::chunk::ChunkData)
     fn chunk_data_nbt(&self) -> Option<NbtCompound> {
         None
     }
+
     fn get_inventory(self: Arc<Self>) -> Option<Arc<dyn Inventory>> {
         None
     }
@@ -107,12 +123,21 @@ pub trait BlockEntity: Send + Sync {
         false
     }
 
+    fn clear_dirty(&self) {
+        // Default implementation does nothing
+        // Override in implementations that have a dirty flag
+    }
+
     fn as_any(&self) -> &dyn Any;
     fn to_property_delegate(self: Arc<Self>) -> Option<Arc<dyn PropertyDelegate>> {
         None
     }
+    fn to_experience_container(self: Arc<Self>) -> Option<Arc<dyn ExperienceContainer>> {
+        None
+    }
 }
 
+#[must_use]
 pub fn block_entity_from_generic<T: BlockEntity>(nbt: &NbtCompound) -> T {
     let x = nbt.get_int("x").unwrap();
     let y = nbt.get_int("y").unwrap();
@@ -120,12 +145,17 @@ pub fn block_entity_from_generic<T: BlockEntity>(nbt: &NbtCompound) -> T {
     T::from_nbt(nbt, BlockPos::new(x, y, z))
 }
 
+#[must_use]
 pub fn block_entity_from_nbt(nbt: &NbtCompound) -> Option<Arc<dyn BlockEntity>> {
     Some(match nbt.get_string("id").unwrap() {
         ChestBlockEntity::ID => Arc::new(block_entity_from_generic::<ChestBlockEntity>(nbt)),
+        TrappedChestBlockEntity::ID => {
+            Arc::new(block_entity_from_generic::<TrappedChestBlockEntity>(nbt))
+        }
         EnderChestBlockEntity::ID => {
             Arc::new(block_entity_from_generic::<EnderChestBlockEntity>(nbt))
         }
+        JukeboxBlockEntity::ID => Arc::new(block_entity_from_generic::<JukeboxBlockEntity>(nbt)),
         SignBlockEntity::ID => Arc::new(block_entity_from_generic::<SignBlockEntity>(nbt)),
         BedBlockEntity::ID => Arc::new(block_entity_from_generic::<BedBlockEntity>(nbt)),
         ComparatorBlockEntity::ID => {
@@ -148,14 +178,23 @@ pub fn block_entity_from_nbt(nbt: &NbtCompound) -> Option<Arc<dyn BlockEntity>> 
             ChiseledBookshelfBlockEntity,
         >(nbt)),
         FurnaceBlockEntity::ID => Arc::new(block_entity_from_generic::<FurnaceBlockEntity>(nbt)),
+        CommandBlockEntity::ID => Arc::new(block_entity_from_generic::<CommandBlockEntity>(nbt)),
         BlastingFurnaceBlockEntity::ID => {
             Arc::new(block_entity_from_generic::<BlastingFurnaceBlockEntity>(nbt))
         }
         SmokerBlockEntity::ID => Arc::new(block_entity_from_generic::<SmokerBlockEntity>(nbt)),
+        DaylightDetectorBlockEntity::ID => Arc::new(block_entity_from_generic::<
+            DaylightDetectorBlockEntity,
+        >(nbt)),
+        BrewingStandBlockEntity::ID => {
+            Arc::new(block_entity_from_generic::<BrewingStandBlockEntity>(nbt))
+        }
+        BellBlockEntity::ID => Arc::new(block_entity_from_generic::<BellBlockEntity>(nbt)),
         _ => return None,
     })
 }
 
+#[must_use]
 pub fn has_block_block_entity(block: &Block) -> bool {
     BLOCK_ENTITY_TYPES.contains(&block.name)
 }

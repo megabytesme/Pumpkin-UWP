@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use pumpkin_data::data_component_impl::EquipmentSlot;
-use pumpkin_world::item::ItemStack;
+use pumpkin_data::item_stack::ItemStack;
 use tokio::sync::Mutex;
 
 // EntityEquipment.java
@@ -17,6 +17,7 @@ impl Default for EntityEquipment {
 }
 
 impl EntityEquipment {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             equipment: HashMap::new(),
@@ -32,6 +33,15 @@ impl EntityEquipment {
             .clone()
     }
 
+    #[must_use]
+    pub fn get_or_insert(&mut self, slot: &EquipmentSlot) -> Arc<Mutex<ItemStack>> {
+        self.equipment
+            .entry(slot.clone())
+            .or_insert_with(|| Arc::new(Mutex::new(ItemStack::EMPTY.clone())))
+            .clone()
+    }
+
+    #[must_use]
     pub fn get(&self, slot: &EquipmentSlot) -> Arc<Mutex<ItemStack>> {
         self.equipment
             .get(slot)

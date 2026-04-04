@@ -3,13 +3,14 @@ use std::sync::Arc;
 use pumpkin_protocol::java::client::play::{ArgumentType, SuggestionProviders};
 
 use crate::command::CommandSender;
-use crate::command::args::ConsumeResult;
+use crate::command::args::{ConsumeResult, ConsumeResultWithSyntax};
 use crate::command::dispatcher::CommandError;
 use crate::command::tree::RawArgs;
 use crate::entity::player::Player;
 use crate::server::Server;
 
 use super::super::args::ArgumentConsumer;
+use super::entities::{ensure_player_only_selector, parse_target_selector_with_context};
 use super::{Arg, DefaultNameArgConsumer, FindArg, GetClientSideArgParser};
 
 /// Select zero, one or multiple players
@@ -35,7 +36,7 @@ impl ArgumentConsumer for PlayersArgumentConsumer {
         server: &'a Server,
         args: &'b mut RawArgs<'a>,
     ) -> ConsumeResult<'a> {
-        let s_opt: Option<&'a str> = args.pop();
+        let s_opt: Option<&'a str> = args.pop().map(|arg| arg.value);
 
         let Some(s) = s_opt else {
             return Box::pin(async move { None });
@@ -63,13 +64,37 @@ impl ArgumentConsumer for PlayersArgumentConsumer {
             let players = match s {
                 "@r" => server
                     .get_random_player()
-                    .await
                     .map_or_else(|| Some(vec![]), |p| Some(vec![p])),
-                "@a" | "@e" => Some(server.get_all_players().await),
-                name => server.get_player_by_name(name).await.map(|p| vec![p]),
+                "@a" | "@e" => Some(server.get_all_players()),
+                name => server.get_player_by_name(name).map(|p| vec![p]),
             };
 
             players.map(Arg::Players)
+        })
+    }
+
+    fn consume_with_syntax<'a>(
+        &'a self,
+        sender: &'a CommandSender,
+        server: &'a Server,
+        args: &mut RawArgs<'a>,
+    ) -> ConsumeResultWithSyntax<'a> {
+        let Some(raw_arg) = args.pop() else {
+            return Box::pin(async { Ok(None) });
+        };
+
+        let selector = match parse_target_selector_with_context(raw_arg) {
+            Ok(selector) => selector,
+            Err(error) => return Box::pin(async move { Err(error) }),
+        };
+
+        if let Err(error) = ensure_player_only_selector(&selector, raw_arg) {
+            return Box::pin(async move { Err(error) });
+        }
+
+        Box::pin(async move {
+            let players = server.select_players(&selector, Some(sender));
+            Ok(Some(Arg::Players(players)))
         })
     }
 }

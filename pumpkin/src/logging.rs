@@ -2,76 +2,142 @@
 #![allow(clippy::print_stdout)]
 
 use flate2::write::GzEncoder;
-use log::{LevelFilter, Log, Record};
-#[cfg(feature = "console")]
-use rustyline_async::Readline;
-use simplelog::{CombinedLogger, Config, SharedLogger, WriteLogger};
-use std::fmt::format;
+use rustyline::completion::Completer;
+use rustyline::highlight::Highlighter;
+use rustyline::hint::Hinter;
+use rustyline::history::FileHistory;
+use rustyline::validate::Validator;
+use rustyline::{Editor, Helper};
+use std::borrow::Cow;
+use std::collections::VecDeque;
 use std::fs::File;
-use std::io::{self, BufWriter};
+use std::io::{self, BufWriter, Write};
 use std::path::PathBuf;
-use time::{Duration, OffsetDateTime, UtcOffset};
+use std::sync::Arc;
+use time::{Duration, OffsetDateTime};
+use tracing::Subscriber;
+use tracing_subscriber::Layer;
+use tracing_subscriber::filter::LevelFilter;
 
-const MAX_ATTEMPTS: u32 = 100;
+use crate::command::CommandSender;
+use crate::command::string_reader::StringReader;
+use crate::command::tree::NodeType;
+use crate::server::Server;
+
+pub type LogCallbackFn = unsafe extern "C" fn(*const std::os::raw::c_char);
+
+#[macro_export]
+macro_rules! log_at_level {
+    ($level:expr, $($arg:tt)*) => {
+        match $level {
+            tracing::Level::TRACE => tracing::trace!($($arg)*),
+            tracing::Level::DEBUG => tracing::debug!($($arg)*),
+            tracing::Level::INFO => tracing::info!($($arg)*),
+            tracing::Level::WARN => tracing::warn!($($arg)*),
+            tracing::Level::ERROR => tracing::error!($($arg)*),
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! plugin_log {
+    ($level:expr, $plugin_name:expr, $($arg:tt)*) => {{
+        let plugin_name = $plugin_name;
+        match $level {
+            tracing::Level::TRACE => {
+                tracing::trace!(
+                    target: "pumpkin_plugin",
+                    plugin = plugin_name,
+                    $($arg)*
+                )
+            },
+            tracing::Level::DEBUG => {
+                tracing::debug!(
+                    target: "pumpkin_plugin",
+                    plugin = plugin_name,
+                    $($arg)*
+                )
+            },
+            tracing::Level::INFO => {
+                tracing::info!(
+                    target: "pumpkin_plugin",
+                    plugin = plugin_name,
+                    $($arg)*
+                )
+            },
+            tracing::Level::WARN => {
+                tracing::warn!(
+                    target: "pumpkin_plugin",
+                    plugin = plugin_name,
+                    $($arg)*
+                )
+            },
+            tracing::Level::ERROR => {
+                tracing::error!(
+                    target: "pumpkin_plugin",
+                    plugin = plugin_name,
+                    $($arg)*
+                )
+            },
+        }
+    }};
+}
+
+const LOG_DIR: &str = "logs";
+const MAX_ATTEMPTS: u32 = 1000;
 
 /// A wrapper for our logger to hold the terminal input while no input is expected in order to
 /// properly flush logs to the output while they happen instead of batched
 pub struct ReadlineLogWrapper {
-    internal: Box<CombinedLogger>,
-    #[cfg(feature = "console")]
-    readline: std::sync::Mutex<Option<rustyline_async::Readline>>,
+    readline: std::sync::Mutex<Option<Editor<PumpkinCommandCompleter, FileHistory>>>,
 }
 
 struct GzipRollingLoggerData {
     pub current_day_of_month: u8,
     pub last_rotate_time: time::OffsetDateTime,
-    pub latest_logger: WriteLogger<File>,
-    pub latest_filename: String,
-    pub log_dir: PathBuf,
+    pub file: BufWriter<File>,
+    latest_filename: String,
+    log_dir: PathBuf,
 }
 
 pub struct GzipRollingLogger {
     log_level: LevelFilter,
     data: std::sync::Mutex<GzipRollingLoggerData>,
-    config: Config,
 }
 
 impl GzipRollingLogger {
     pub fn new(
         log_level: LevelFilter,
-        config: Config,
         filename: String,
         base_path: &std::path::Path,
-        external_callback: Option<LogCallbackFn>, // Pass callback for early reporting
-    ) -> Result<Box<Self>, Box<dyn std::error::Error>> {
+        external_callback: Option<LogCallbackFn>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let now = time::OffsetDateTime::now_utc();
-
-        // UWP SHIM: Force absolute path inside probe_root
-        let log_dir = base_path.join("logs");
+        let log_dir = base_path.join(LOG_DIR);
         std::fs::create_dir_all(&log_dir)?;
 
         let latest_path = log_dir.join(&filename);
 
+        // If latest.log exists, we will gzip it
         if latest_path.exists() {
             let msg = format!(
                 "Found existing log file at '{}', gzipping it now...",
                 latest_path.display()
             );
-
-            // Report to UWP UI via callback
             if let Some(cb) = external_callback {
-                if let Ok(c_str) = std::ffi::CString::new(msg) {
+                if let Ok(c_str) = std::ffi::CString::new(msg.clone()) {
                     unsafe {
                         (cb)(c_str.as_ptr());
                     }
                 }
             } else {
-                eprintln!("{}", msg);
+                eprintln!("{msg}");
             }
 
             let new_gz_path = Self::new_filename(true, &log_dir)?;
 
             let mut file = File::open(&latest_path)?;
+
             let mut encoder = GzEncoder::new(
                 BufWriter::new(File::create(&new_gz_path)?),
                 flate2::Compression::best(),
@@ -83,26 +149,25 @@ impl GzipRollingLogger {
             std::fs::remove_file(&latest_path)?;
         }
 
-        let new_logger = WriteLogger::new(log_level, config.clone(), File::create(&latest_path)?);
+        let file = BufWriter::new(File::create(&latest_path)?);
 
-        Ok(Box::new(Self {
+        Ok(Self {
             log_level,
             data: std::sync::Mutex::new(GzipRollingLoggerData {
                 current_day_of_month: now.day(),
                 last_rotate_time: now,
                 latest_filename: filename,
-                latest_logger: *new_logger,
-                log_dir, // Store absolute path for rotations
+                file,
+                log_dir,
             }),
-            config,
-        }))
+        })
     }
 
     pub fn new_filename(
         yesterday: bool,
         log_dir: &std::path::Path,
     ) -> Result<PathBuf, Box<dyn std::error::Error>> {
-        let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
+        let local_offset = time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC);
         let mut now = OffsetDateTime::now_utc().to_offset(local_offset);
 
         if yesterday {
@@ -111,25 +176,58 @@ impl GzipRollingLogger {
 
         let date_format = format!("{}-{:02}-{:02}", now.year(), now.month() as u8, now.day());
 
+        let mut oldest_log = None;
+
         for id in 1..=MAX_ATTEMPTS {
             let filename = log_dir.join(format!("{date_format}-{id}.log.gz"));
+
             if !filename.exists() {
                 return Ok(filename);
             }
+
+            let Ok(modified_time) = filename.metadata().and_then(|m| m.modified()) else {
+                continue;
+            };
+
+            if let Some((_, old_time)) = oldest_log {
+                if modified_time < old_time {
+                    oldest_log = Some((filename, modified_time));
+                }
+
+                continue;
+            }
+
+            oldest_log = Some((filename, modified_time));
+        }
+
+        if let Some((path, _)) = oldest_log {
+            eprintln!(
+                "Max log ids ({MAX_ATTEMPTS}) used for {date_format}; overwriting oldest log file: {}",
+                path.display()
+            );
+            return Ok(path);
         }
 
         Err(format!(
             "Failed to find a unique log filename for date {date_format} after {MAX_ATTEMPTS} attempts.",
-        ).into())
+        )
+        .into())
     }
 
     fn rotate_log(&self) -> Result<(), Box<dyn std::error::Error>> {
         let now = time::OffsetDateTime::now_utc();
         let mut data = self.data.lock().unwrap();
 
-        // Use the stored absolute log_dir
         let new_gz_path = Self::new_filename(true, &data.log_dir)?;
         let latest_path = data.log_dir.join(&data.latest_filename);
+        let temp_path = data.log_dir.join(".pumpkin-log-rotate.tmp");
+
+        // Flush and drop the current file
+        data.file.flush()?;
+        drop(std::mem::replace(
+            &mut data.file,
+            BufWriter::new(File::create(&temp_path)?),
+        ));
 
         let mut file = File::open(&latest_path)?;
         let mut encoder = GzEncoder::new(
@@ -141,11 +239,8 @@ impl GzipRollingLogger {
 
         data.current_day_of_month = now.day();
         data.last_rotate_time = now;
-        data.latest_logger = *WriteLogger::new(
-            self.log_level,
-            self.config.clone(),
-            File::create(&latest_path)?,
-        );
+        data.file = BufWriter::new(File::create(&latest_path)?);
+        let _ = std::fs::remove_file(temp_path);
         Ok(())
     }
 }
@@ -168,30 +263,46 @@ fn remove_ansi_color_code(s: &str) -> String {
     result
 }
 
-impl Log for GzipRollingLogger {
-    fn enabled(&self, metadata: &log::Metadata) -> bool {
-        metadata.level() <= self.log_level
-    }
+impl<S> Layer<S> for GzipRollingLogger
+where
+    S: Subscriber,
+{
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        let metadata = event.metadata();
+        let level = metadata.level();
 
-    fn log(&self, record: &Record) {
-        if !self.enabled(record.metadata()) {
+        // Check if we should log this event based on level
+        let should_log = match *level {
+            tracing::Level::ERROR => self.log_level >= LevelFilter::ERROR,
+            tracing::Level::WARN => self.log_level >= LevelFilter::WARN,
+            tracing::Level::INFO => self.log_level >= LevelFilter::INFO,
+            tracing::Level::DEBUG => self.log_level >= LevelFilter::DEBUG,
+            tracing::Level::TRACE => self.log_level >= LevelFilter::TRACE,
+        };
+
+        if !should_log {
             return;
         }
 
         let now = time::OffsetDateTime::now_utc();
 
-        if let Ok(data) = self.data.lock() {
-            let original_string = format(*record.args());
-            let string = remove_ansi_color_code(&original_string);
-            data.latest_logger.log(
-                &Record::builder()
-                    .args(format_args!("{string}"))
-                    .metadata(record.metadata().clone())
-                    .module_path(record.module_path())
-                    .file(record.file())
-                    .line(record.line())
-                    .build(),
-            );
+        if let Ok(mut data) = self.data.lock() {
+            // Format the event
+            let mut visitor = StringVisitor::default();
+            event.record(&mut visitor);
+            let message = visitor.0;
+
+            let clean_message = remove_ansi_color_code(&message);
+
+            // Write to file
+            let _ = writeln!(data.file, "[{level}] {clean_message}");
+            let _ = data.file.flush();
+
+            // Check if we need to rotate
             if data.current_day_of_month != now.day() {
                 drop(data);
                 if let Err(e) = self.rotate_log() {
@@ -200,153 +311,309 @@ impl Log for GzipRollingLogger {
             }
         }
     }
-
-    fn flush(&self) {
-        if let Ok(data) = self.data.lock() {
-            data.latest_logger.flush();
-        }
-    }
 }
 
-impl SharedLogger for GzipRollingLogger {
-    fn level(&self) -> LevelFilter {
-        self.log_level
-    }
+#[derive(Default)]
+struct StringVisitor(String);
 
-    fn config(&self) -> Option<&Config> {
-        Some(&self.config)
-    }
-
-    fn as_log(self: Box<Self>) -> Box<dyn Log> {
-        Box::new(*self)
+impl tracing::field::Visit for StringVisitor {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        if field.name() == "message" {
+            self.0 = format!("{value:?}");
+            // Remove quotes if present
+            if self.0.starts_with('"') && self.0.ends_with('"') {
+                self.0 = self.0[1..self.0.len() - 1].to_string();
+            }
+        }
     }
 }
 
 impl ReadlineLogWrapper {
     #[must_use]
-    pub fn new(
-        log: Box<dyn SharedLogger + 'static>,
-        file_logger: Option<Box<dyn SharedLogger + 'static>>,
-        #[cfg(feature = "console")] rl: Option<rustyline_async::Readline>,
-    ) -> Self {
-        let loggers: Vec<Option<Box<dyn SharedLogger + 'static>>> = vec![Some(log), file_logger];
+    pub const fn new(rl: Option<Editor<PumpkinCommandCompleter, FileHistory>>) -> Self {
         Self {
-            internal: CombinedLogger::new(loggers.into_iter().flatten().collect()),
-            #[cfg(feature = "console")]
             readline: std::sync::Mutex::new(rl),
         }
     }
 
-    #[cfg(feature = "console")]
-    pub fn take_readline(&self) -> Option<rustyline_async::Readline> {
+    pub fn take_readline(&self) -> Option<Editor<PumpkinCommandCompleter, FileHistory>> {
         self.readline
             .lock()
             .map_or_else(|_| None, |mut result| result.take())
     }
 
-    // This isn't really dead code, just for some reason rust thinks that it might be.
-    // Schroedinger's dead code -> expect warns unfulfilled lint expectation but removing it causes dead_code lint?
+    // This isn't really dead code. It is just only used by the lib and not the bin for this
+    // crate, and as such creates a compiler warning.
     #[allow(dead_code)]
-    #[cfg(feature = "console")]
-    pub(crate) fn return_readline(&self, rl: rustyline_async::Readline) {
+    pub(crate) fn return_readline(&self, rl: Editor<PumpkinCommandCompleter, FileHistory>) {
         if let Ok(mut result) = self.readline.lock() {
             let _ = result.insert(rl);
         }
     }
+}
 
-    #[cfg(feature = "console")]
-    pub fn new_ffi_compatible(rl: Option<Readline>) -> Self {
-        Self {
-            internal: CombinedLogger::new(vec![]),
-            readline: std::sync::Mutex::new(rl),
-        }
-    }
+#[derive(Clone, Default)]
+pub struct PumpkinCommandCompleter {
+    pub server: Arc<std::sync::RwLock<Option<Arc<Server>>>>,
+    pub rt: Arc<std::sync::OnceLock<tokio::runtime::Handle>>,
+}
 
-    #[cfg(not(feature = "console"))]
-    pub fn new_ffi_compatible(_rl: Option<()>) -> Self {
+impl PumpkinCommandCompleter {
+    #[must_use]
+    pub fn new() -> Self {
         Self {
-            internal: CombinedLogger::new(vec![]),
+            server: Arc::new(std::sync::RwLock::new(None)),
+            rt: Arc::new(std::sync::OnceLock::new()),
         }
     }
 }
 
-// Writing to `stdout` is expensive anyway, so I don't think having a `Mutex` here is a big deal.
-impl Log for ReadlineLogWrapper {
-    fn log(&self, record: &log::Record) {
-        self.internal.log(record);
-        #[cfg(feature = "console")]
+impl Helper for PumpkinCommandCompleter {}
+impl Highlighter for PumpkinCommandCompleter {
+    fn highlight<'l>(&self, line: &'l str, _pos: usize) -> Cow<'l, str> {
+        line.find(' ').map_or_else(
+            || Cow::Owned(format!("\x1b[1;36m{line}\x1b[0m")),
+            |first_space| {
+                let (cmd, args) = line.split_at(first_space);
+                Cow::Owned(format!("\x1b[1;36m{cmd}\x1b[0m{args}"))
+            },
+        )
+    }
+}
+impl Hinter for PumpkinCommandCompleter {
+    type Hint = String;
+    fn hint(&self, line: &str, pos: usize, ctx: &rustyline::Context<'_>) -> Option<Self::Hint> {
+        if line.is_empty() || pos < line.len() {
+            return None;
+        }
+
+        if let Ok((_, candidates)) = self.complete(line, pos, ctx)
+            && let Some(first) = candidates.first()
         {
-            if let Ok(mut lock) = self.readline.lock()
-                && let Some(rl) = lock.as_mut()
-            {
-                let _ = rl.flush();
+            let last_word = line.split_whitespace().last().unwrap_or("");
+            if first.starts_with('<') {
+                return line.ends_with(' ').then(|| first.clone());
+            }
+
+            if let Some(stripped) = first.strip_prefix(last_word) {
+                return Some(stripped.to_string());
             }
         }
+        None
     }
+}
 
-    fn flush(&self) {
-        self.internal.flush();
-        #[cfg(feature = "console")]
-        {
-            if let Ok(mut lock) = self.readline.lock()
-                && let Some(rl) = lock.as_mut()
+impl Validator for PumpkinCommandCompleter {}
+
+impl Completer for PumpkinCommandCompleter {
+    type Candidate = String;
+
+    #[expect(clippy::too_many_lines)]
+    fn complete(
+        &self,
+        line: &str,
+        pos: usize,
+        _ctx: &rustyline::Context<'_>,
+    ) -> rustyline::Result<(usize, Vec<Self::Candidate>)> {
+        let cmd_to_cursor = &line[..pos];
+        let has_slash = cmd_to_cursor.starts_with('/');
+        let cmd = if has_slash {
+            &cmd_to_cursor[1..]
+        } else {
+            cmd_to_cursor
+        };
+
+        let Some(handle) = self.rt.get() else {
+            return Ok((0, Vec::new()));
+        };
+        let Ok(server_guard) = self.server.try_read() else {
+            return Ok((0, Vec::new()));
+        };
+        let Some(server) = server_guard.as_ref() else {
+            return Ok((0, Vec::new()));
+        };
+
+        let parts: Vec<&str> = cmd.split_whitespace().collect();
+        let ends_with_space = cmd.ends_with(' ');
+
+        handle.block_on(async {
+            let dispatcher = server.command_dispatcher.read().await;
+            let source = CommandSender::Console.into_source(server).await;
+
+            // Temporary setups to unify both dispatchers for now:
+
             {
-                let _ = rl.flush();
+                if cmd.trim().is_empty() {
+                    // Give all commands as suggestions.
+
+                    let suggestions: Vec<String> = dispatcher
+                        .get_all_commands()
+                        .keys()
+                        .map(ToString::to_string)
+                        .collect();
+                    return Ok((pos, suggestions));
+                }
             }
-        }
-    }
 
-    fn enabled(&self, metadata: &log::Metadata) -> bool {
-        self.internal.enabled(metadata)
-    }
-}
+            {
+                let mut reader = StringReader::new(cmd);
+                if reader.peek() == Some('/') {
+                    reader.skip();
+                }
+                let parsed = dispatcher.parse(&mut reader, &source).await;
+                let suggestions = dispatcher.get_completion_suggestions(parsed, pos).await;
 
-pub type LogCallbackFn = unsafe extern "C" fn(*const std::os::raw::c_char);
+                if !suggestions.is_empty() {
+                    let start = suggestions.range.start;
+                    let suggestions = suggestions
+                        .suggestions
+                        .into_iter()
+                        .map(|s| s.text.cached_text().clone())
+                        .collect();
+                    return Ok((start, suggestions));
+                }
+            }
 
-pub struct CallbackLogger {
-    level: LevelFilter,
-    config: Config,
-    callback: LogCallbackFn,
-}
+            let dispatcher = &dispatcher.fallback_dispatcher;
+            let src = CommandSender::Console;
 
-impl CallbackLogger {
-    pub fn new(level: LevelFilter, config: Config, callback: LogCallbackFn) -> Box<Self> {
-        Box::new(Self {
-            level,
-            config,
-            callback,
+            if parts.is_empty() || (parts.len() == 1 && !ends_with_space) {
+                let typing = parts.first().unwrap_or(&"");
+                let candidates = dispatcher
+                    .commands
+                    .keys()
+                    .filter(|k| k.starts_with(typing))
+                    .cloned()
+                    .collect();
+                return Ok((usize::from(has_slash), candidates));
+            }
+
+            let Some(tree) = dispatcher.get_tree(parts[0]).ok() else {
+                return Ok((0, Vec::new()));
+            };
+
+            let mut current_indices = tree.children.clone();
+            let mut word_index = 1;
+            let walk_limit = if ends_with_space {
+                parts.len()
+            } else {
+                parts.len() - 1
+            };
+
+            while word_index < walk_limit {
+                let token = parts[word_index];
+                let mut next_indices = Vec::new();
+
+                let mut worklist: VecDeque<usize> = current_indices.iter().copied().collect();
+
+                while let Some(idx) = worklist.pop_front() {
+                    let node = &tree.nodes[idx];
+
+                    match &node.node_type {
+                        NodeType::Require { predicate } => {
+                            if predicate(&src) {
+                                worklist.extend(node.children.iter().copied());
+                            }
+                        }
+                        NodeType::Literal { string } => {
+                            if string.eq_ignore_ascii_case(token) {
+                                next_indices.extend(node.children.iter().copied());
+                            }
+                        }
+                        NodeType::Argument { .. } => {
+                            next_indices.extend(node.children.iter().copied());
+                        }
+                        NodeType::ExecuteLeaf { .. } => {}
+                    }
+                }
+
+                if next_indices.is_empty() {
+                    return Ok((0, Vec::new()));
+                }
+
+                current_indices = next_indices;
+                word_index += 1;
+            }
+
+            let typing = if ends_with_space {
+                ""
+            } else {
+                parts.last().unwrap_or(&"")
+            };
+            let mut candidates = Vec::new();
+
+            let mut suggestion_worklist: VecDeque<usize> = current_indices.into_iter().collect();
+
+            while let Some(idx) = suggestion_worklist.pop_front() {
+                let node = &tree.nodes[idx];
+                match &node.node_type {
+                    NodeType::Require { predicate } => {
+                        if predicate(&src) {
+                            suggestion_worklist.extend(node.children.iter().copied());
+                        }
+                    }
+                    NodeType::Literal { string } => {
+                        if string.starts_with(typing) {
+                            candidates.push(string.clone());
+                        }
+                    }
+                    NodeType::Argument { name, consumer } => {
+                        let suggest_future = consumer.suggest(&src, server, typing);
+
+                        if let Ok(Some(suggestions)) = suggest_future.await {
+                            for s in suggestions {
+                                let s = s.suggestion;
+                                if s.starts_with(typing) {
+                                    candidates.push(s);
+                                }
+                            }
+                        } else {
+                            let placeholder = format!("<{name}>");
+                            if placeholder.starts_with(typing) || typing.is_empty() {
+                                candidates.push(placeholder);
+                            }
+                        }
+                    }
+                    NodeType::ExecuteLeaf { executor: _ } => {}
+                }
+            }
+
+            let last_space = cmd.rfind(' ').map_or(0, |i| i + 1);
+            Ok((last_space + usize::from(has_slash), candidates))
         })
     }
 }
 
-impl Log for CallbackLogger {
-    fn enabled(&self, metadata: &log::Metadata) -> bool {
-        metadata.level() <= self.level
-    }
-
-    fn log(&self, record: &Record) {
-        if self.enabled(record.metadata()) {
-            let msg = format!("[{}] {}", record.level(), record.args());
-
-            if let Ok(c_str) = std::ffi::CString::new(msg) {
-                unsafe {
-                    (self.callback)(c_str.as_ptr());
-                }
-            }
-        }
-    }
-
-    fn flush(&self) {}
+pub struct CallbackLogger {
+    callback: LogCallbackFn,
 }
 
-impl SharedLogger for CallbackLogger {
-    fn level(&self) -> LevelFilter {
-        self.level
+impl CallbackLogger {
+    #[must_use]
+    pub const fn new(callback: LogCallbackFn) -> Self {
+        Self { callback }
     }
-    fn config(&self) -> Option<&Config> {
-        Some(&self.config)
-    }
-    fn as_log(self: Box<Self>) -> Box<dyn Log> {
-        Box::new(*self)
+}
+
+impl<S> Layer<S> for CallbackLogger
+where
+    S: Subscriber,
+{
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        let metadata = event.metadata();
+        let mut visitor = StringVisitor::default();
+        event.record(&mut visitor);
+        let message = remove_ansi_color_code(&visitor.0);
+        let line = format!("[{}] {}", metadata.level(), message);
+
+        if let Ok(c_str) = std::ffi::CString::new(line) {
+            unsafe {
+                (self.callback)(c_str.as_ptr());
+            }
+        }
     }
 }

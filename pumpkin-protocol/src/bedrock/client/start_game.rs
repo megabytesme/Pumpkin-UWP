@@ -15,8 +15,12 @@ use uuid::Uuid;
 #[derive(PacketWrite)]
 #[packet(11)]
 pub struct CStartGame {
-    // https://mojang.github.io/bedrock-protocol-docs/html/StartGamePacket.html
+    // The unique ID is a value that remains consistent across
+    // different sessions of the same world, but most servers simply fill the runtime ID of the entity out for
+    // this field.
     pub entity_id: VarLong,
+    // The runtime ID is unique for each world session, and
+    // entities are generally identified in packets using this runtime ID.
     pub runtime_entity_id: VarULong,
     pub player_gamemode: GameMode,
     pub position: Vector3<f32>,
@@ -35,7 +39,7 @@ pub struct CStartGame {
     pub current_level_time: u64,
     pub enchantment_seed: VarInt,
     pub block_properties_size: VarUInt,
-    //pub block_properties: [GG; 2],
+
     pub multiplayer_correlation_id: String,
     pub enable_itemstack_net_manager: bool,
     pub server_version: String,
@@ -50,8 +54,34 @@ pub struct CStartGame {
 
     pub enable_clientside_generation: bool,
     pub blocknetwork_ids_are_hashed: bool,
-    pub tick_death_system_enabled: bool,
     pub server_auth_sounds: bool,
+
+    // 2 Optionals is what we need Mojang :cap:
+    pub server_join_information: Option<ServerJoinInformation>,
+    pub telemetry: ServerTelemetryData,
+}
+
+#[derive(PacketWrite)]
+pub struct ServerJoinInformation {
+    gathering_info: Option<GatheringJoinInfo>,
+}
+
+#[derive(PacketWrite)]
+pub struct GatheringJoinInfo {
+    experience_id: String,
+    experience_name: String,
+    experience_world_id: String,
+    experience_world_name: String,
+    creator_id: String,
+    store_id: String,
+}
+
+#[derive(PacketWrite)]
+pub struct ServerTelemetryData {
+    pub server_id: String,
+    pub scenario_id: String,
+    pub world_id: String,
+    pub owner_id: String,
 }
 
 #[derive(PacketWrite)]
@@ -117,10 +147,6 @@ pub struct LevelSettings {
     pub override_force_experimental_gameplay_has_value: bool,
     pub chat_restriction_level: i8,
     pub disable_player_interactions: bool,
-    pub server_id: String,
-    pub world_id: String,
-    pub scenario_id: String,
-    pub owner_id: String,
 }
 
 #[derive(Default, PacketWrite)]

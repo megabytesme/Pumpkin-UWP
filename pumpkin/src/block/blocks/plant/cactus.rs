@@ -9,7 +9,7 @@ use pumpkin_util::math::position::BlockPos;
 use pumpkin_world::BlockStateId;
 use pumpkin_world::tick::TickPriority;
 use pumpkin_world::world::{BlockAccessor, BlockFlags};
-use rand::Rng;
+use rand::RngExt;
 
 use crate::block::{
     BlockBehaviour, BlockFuture, CanPlaceAtArgs, GetStateForNeighborUpdateArgs,
@@ -92,7 +92,6 @@ impl BlockBehaviour for CactusBlock {
     }
 
     fn on_entity_collision<'a>(&'a self, args: OnEntityCollisionArgs<'a>) -> BlockFuture<'a, ()> {
-        log::warn!("CactusBlock::on_entity_collision");
         Box::pin(async move {
             args.entity
                 .damage(args.entity, 1.0, DamageType::CACTUS)
@@ -130,6 +129,6 @@ async fn can_place_at(world: &dyn BlockAccessor, block_pos: &BlockPos) -> bool {
         }
     }
     let block = world.get_block(&block_pos.down()).await;
-    (block == &Block::CACTUS || block.has_tag(&tag::Block::MINECRAFT_SAND))
+    (block == &Block::CACTUS || block.has_tag(&tag::Block::MINECRAFT_SUPPORTS_CACTUS))
         && !world.get_block_state(&block_pos.up()).await.is_liquid()
 }

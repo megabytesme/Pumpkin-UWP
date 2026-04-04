@@ -1,5 +1,6 @@
 use aes::cipher::KeyIvInit;
 use async_compression::tokio::bufread::ZlibDecoder;
+use bytes::BytesMut;
 use tokio::io::{AsyncRead, AsyncReadExt, BufReader};
 
 use crate::{
@@ -8,6 +9,7 @@ use crate::{
 };
 
 // decrypt -> decompress -> raw
+
 pub enum DecompressionReader<R: AsyncRead + Unpin> {
     Decompress(ZlibDecoder<BufReader<R>>),
     None(R),
@@ -39,10 +41,11 @@ pub enum DecryptionReader<R: AsyncRead + Unpin> {
 }
 
 impl<R: AsyncRead + Unpin> DecryptionReader<R> {
+    #[must_use]
     pub fn upgrade(self, cipher: Aes128Cfb8Dec) -> Self {
         match self {
             Self::None(stream) => Self::Decrypt(Box::new(StreamDecryptor::new(cipher, stream))),
-            _ => panic!("Cannot upgrade a stream that already has a cipher!"),
+            Self::Decrypt(_) => panic!("Cannot upgrade a stream that already has a cipher!"),
         }
     }
 }
@@ -68,11 +71,12 @@ impl<R: AsyncRead + Unpin> AsyncRead for DecryptionReader<R> {
 }
 
 /// Decoder: Client -> Server
-/// Supports ZLib decoding/decompression
+/// Supports `ZLib` decoding/decompression
 /// Supports Aes128 Encryption
 pub struct TCPNetworkDecoder<R: AsyncRead + Unpin> {
     reader: DecryptionReader<R>,
     compression: Option<CompressionThreshold>,
+    payload_scratch: BytesMut,
 }
 
 impl<R: AsyncRead + Unpin> TCPNetworkDecoder<R> {
@@ -80,10 +84,11 @@ impl<R: AsyncRead + Unpin> TCPNetworkDecoder<R> {
         Self {
             reader: DecryptionReader::None(reader),
             compression: None,
+            payload_scratch: BytesMut::new(),
         }
     }
 
-    pub fn set_compression(&mut self, threshold: CompressionThreshold) {
+    pub const fn set_compression(&mut self, threshold: CompressionThreshold) {
         self.compression = Some(threshold);
     }
 
@@ -107,10 +112,12 @@ impl<R: AsyncRead + Unpin> TCPNetworkDecoder<R> {
         let packet_len = packet_len.0 as u64;
 
         if !(0..=MAX_PACKET_SIZE).contains(&packet_len) {
-            Err(PacketDecodeError::OutOfBounds)?
+            Err(PacketDecodeError::OutOfBounds)?;
         }
 
         let mut bounded_reader = (&mut self.reader).take(packet_len);
+        let mut expected_packet_data_len = packet_len as usize;
+        let mut expected_uncompressed_packet_data_len = None;
 
         let mut reader = if let Some(threshold) = self.compression {
             let decompressed_length = VarInt::decode_async(&mut bounded_reader).await?;
@@ -118,17 +125,20 @@ impl<R: AsyncRead + Unpin> TCPNetworkDecoder<R> {
             let decompressed_length = decompressed_length.0 as usize;
 
             if !(0..=MAX_PACKET_DATA_SIZE).contains(&decompressed_length) {
-                Err(PacketDecodeError::TooLong)?
+                Err(PacketDecodeError::TooLong)?;
             }
 
             if decompressed_length > 0 {
+                expected_packet_data_len = decompressed_length;
+                expected_uncompressed_packet_data_len = Some(decompressed_length);
                 DecompressionReader::Decompress(ZlibDecoder::new(BufReader::new(bounded_reader)))
             } else {
                 // Validate that we are not less than the compression threshold
                 if raw_packet_length > threshold as u64 {
-                    Err(PacketDecodeError::NotCompressed)?
+                    Err(PacketDecodeError::NotCompressed)?;
                 }
 
+                expected_packet_data_len = raw_packet_length as usize;
                 DecompressionReader::None(bounded_reader)
             }
         } else {
@@ -142,16 +152,35 @@ impl<R: AsyncRead + Unpin> TCPNetworkDecoder<R> {
             .await
             .map_err(|_| PacketDecodeError::DecodeID)?
             .0;
+        let packet_id_len = VarInt(packet_id).written_size();
 
-        let mut payload = Vec::new();
-        reader
-            .read_to_end(&mut payload)
-            .await
-            .map_err(|err| PacketDecodeError::FailedDecompression(err.to_string()))?;
+        let payload_len_hint = expected_packet_data_len.saturating_sub(packet_id_len);
+        self.payload_scratch.clear();
+        self.payload_scratch.reserve(payload_len_hint);
+        loop {
+            let bytes_read = reader
+                .read_buf(&mut self.payload_scratch)
+                .await
+                .map_err(|err| PacketDecodeError::FailedDecompression(err.to_string()))?;
+            if bytes_read == 0 {
+                break;
+            }
+        }
+
+        if let Some(expected_uncompressed_packet_data_len) = expected_uncompressed_packet_data_len {
+            let decoded_packet_data_len = packet_id_len + self.payload_scratch.len();
+            if decoded_packet_data_len != expected_uncompressed_packet_data_len {
+                return Err(PacketDecodeError::FailedDecompression(format!(
+                    "Declared decompressed length {expected_uncompressed_packet_data_len} but decoded {decoded_packet_data_len} bytes"
+                )));
+            }
+        }
+
+        let payload = self.payload_scratch.split().freeze();
 
         Ok(RawPacket {
             id: packet_id,
-            payload: payload.into(),
+            payload,
         })
     }
 }
@@ -219,11 +248,9 @@ mod tests {
         let packet_len = buffer.len() as i32;
         let packet_len_varint = VarInt(packet_len);
         let mut packet_length_encoded = Vec::new();
-        {
-            packet_len_varint
-                .encode(&mut packet_length_encoded)
-                .unwrap();
-        }
+        packet_len_varint
+            .encode(&mut packet_length_encoded)
+            .unwrap();
 
         // Create a new buffer for the entire packet
         let mut packet = Vec::new();
@@ -233,15 +260,13 @@ mod tests {
         // Encrypt if key and IV are provided.
         if let (Some(k), Some(v)) = (key, iv) {
             encrypt_aes128(&mut packet, k, v);
-            packet
-        } else {
-            packet
         }
+        packet
     }
 
     /// Test decoding without compression and encryption
     #[tokio::test]
-    async fn test_decode_without_compression_and_encryption() {
+    async fn decode_without_compression_and_encryption() {
         // Sample packet data: packet_id = 1, payload = "Hello"
         let packet_id = 1;
         let payload = b"Hello";
@@ -261,7 +286,7 @@ mod tests {
 
     /// Test decoding with compression
     #[tokio::test]
-    async fn test_decode_with_compression() {
+    async fn decode_with_compression() {
         // Sample packet data: packet_id = 2, payload = "Hello, compressed world!"
         let packet_id = 2;
         let payload = b"Hello, compressed world!";
@@ -283,7 +308,7 @@ mod tests {
 
     /// Test decoding with encryption
     #[tokio::test]
-    async fn test_decode_with_encryption() {
+    async fn decode_with_encryption() {
         // Sample packet data: packet_id = 3, payload = "Hello, encrypted world!"
         let packet_id = 3;
         let payload = b"Hello, encrypted world!";
@@ -307,7 +332,7 @@ mod tests {
 
     /// Test decoding with both compression and encryption
     #[tokio::test]
-    async fn test_decode_with_compression_and_encryption() {
+    async fn decode_with_compression_and_encryption() {
         // Sample packet data: packet_id = 4, payload = "Hello, compressed and encrypted world!"
         let packet_id = 4;
         let payload = b"Hello, compressed and encrypted world!";
@@ -333,7 +358,7 @@ mod tests {
 
     /// Test decoding with invalid compressed data
     #[tokio::test]
-    async fn test_decode_with_invalid_compressed_data() {
+    async fn decode_with_invalid_compressed_data() {
         // Sample packet data: packet_id = 5, payload_len = 10, but compressed data is invalid
         let data_len = 10; // Expected decompressed size
         let invalid_compressed_data = vec![0xFF, 0xFF, 0xFF]; // Invalid Zlib data
@@ -362,14 +387,12 @@ mod tests {
         // Attempt to decode and expect a decompression error
         let result = decoder.get_raw_packet().await;
 
-        if result.is_ok() {
-            panic!("This should have errored!");
-        }
+        assert!(result.is_err(), "This should have errored!");
     }
 
     /// Test decoding with a zero-length packet
     #[tokio::test]
-    async fn test_decode_with_zero_length_packet() {
+    async fn decode_with_zero_length_packet() {
         // Sample packet data: packet_id = 7, payload = "" (empty)
         let packet_id = 7;
         let payload = b"";
@@ -388,7 +411,8 @@ mod tests {
 
     /// Test decoding with maximum length packet
     #[tokio::test]
-    async fn test_decode_with_maximum_length_packet() {
+    #[expect(clippy::print_stdout)]
+    async fn decode_with_maximum_length_packet() {
         // Sample packet data: packet_id = 8, payload = "A" repeated MAX_PACKET_SIZE times
         // Sample packet data: packet_id = 8, payload = "A" repeated (MAX_PACKET_SIZE - 1) times
         let packet_id = 8;

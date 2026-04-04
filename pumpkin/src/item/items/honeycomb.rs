@@ -11,13 +11,14 @@ use pumpkin_data::BlockDirection;
 use pumpkin_data::block_properties::BlockProperties;
 use pumpkin_data::block_properties::OakDoorLikeProperties;
 use pumpkin_data::item::Item;
+use pumpkin_data::item_stack::ItemStack;
 use pumpkin_data::tag::Taggable;
 use pumpkin_data::world::WorldEvent;
 use pumpkin_data::{Block, tag};
 use pumpkin_util::math::position::BlockPos;
+use pumpkin_util::math::vector3::Vector3;
 use pumpkin_world::block::entities::BlockEntity;
 use pumpkin_world::block::entities::sign::SignBlockEntity;
-use pumpkin_world::item::ItemStack;
 use pumpkin_world::world::BlockFlags;
 
 pub struct HoneyCombItem;
@@ -35,6 +36,7 @@ impl ItemBehaviour for HoneyCombItem {
         player: &'a Player,
         location: BlockPos,
         _face: BlockDirection,
+        _cursor_pos: Vector3<f32>,
         block: &'a Block,
         _server: &'a Server,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
@@ -94,7 +96,7 @@ impl HoneyCombItem {
 
         args.world.update_block_entity(block_entity).await;
         args.world
-            .sync_world_event(WorldEvent::BlockWaxed, *args.position, 0)
+            .sync_world_event(WorldEvent::ParticlesAndSoundWaxOn, *args.position, 0)
             .await;
 
         BlockActionResult::Success

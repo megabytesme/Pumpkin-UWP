@@ -7,13 +7,17 @@ use pumpkin_data::{Block, BlockDirection, tag};
 use pumpkin_util::math::position::BlockPos;
 use pumpkin_util::random::RandomGenerator;
 use pumpkin_util::random::xoroshiro128::Xoroshiro;
-use rand::Rng;
+use rand::RngExt;
 use soul_fire::SoulFireBlock;
 
 use crate::block::blocks::fire::fire::FireBlock;
-use crate::block::{BlockBehaviour, CanPlaceAtArgs};
+use crate::block::{BlockBehaviour, BlockFuture, CanPlaceAtArgs, OnEntityCollisionArgs};
+use crate::entity::EntityBase;
 use crate::world::World;
 use crate::world::portal::nether::NetherPortal;
+use pumpkin_data::damage::DamageType;
+use pumpkin_data::entity::EntityType;
+use std::sync::atomic::Ordering;
 
 #[expect(clippy::module_inception)]
 pub mod fire;
@@ -56,8 +60,9 @@ impl FireBlockBase {
                     world: Some(world),
                     block_accessor: world.as_ref(),
                     block: &Block::SOUL_FIRE,
+                    state: Block::SOUL_FIRE.default_state,
                     position: block_pos,
-                    direction: BlockDirection::Up,
+                    direction: None,
                     player: None,
                     use_item_on: None,
                 })
@@ -69,8 +74,9 @@ impl FireBlockBase {
                     world: Some(world),
                     block_accessor: world.as_ref(),
                     block: &Block::FIRE,
+                    state: Block::FIRE.default_state,
                     position: block_pos,
-                    direction: BlockDirection::Up,
+                    direction: None,
                     player: None,
                     use_item_on: None,
                 })
@@ -113,9 +119,52 @@ impl FireBlockBase {
             .is_some();
     }
 
+    /// Shared fire collision behavior used by `fire` and `soul_fire`.
+    #[must_use]
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn apply_fire_collision(
+        args: OnEntityCollisionArgs<'_>,
+        extra_damage_for_living: bool,
+    ) -> BlockFuture<'_, ()> {
+        Box::pin(async move {
+            let base_entity = args.entity.get_entity();
+            if !base_entity.entity_type.fire_immune
+                && !base_entity.fire_immune.load(Ordering::Relaxed)
+            {
+                let ticks = base_entity.fire_ticks.load(Ordering::Relaxed);
+
+                // Timer logic
+                if ticks < 0 {
+                    base_entity.fire_ticks.store(ticks + 1, Ordering::Relaxed);
+                } else if base_entity.entity_type == &EntityType::PLAYER {
+                    let rnd_ticks = rand::rng().random_range(1..3);
+                    base_entity
+                        .fire_ticks
+                        .store(ticks + rnd_ticks, Ordering::Relaxed);
+                }
+
+                // Apply fire ticks
+                if base_entity.fire_ticks.load(Ordering::Relaxed) >= 0 {
+                    base_entity.set_on_fire_for(8.0);
+                }
+
+                // Regular fire vs soul fire damage
+                if extra_damage_for_living {
+                    base_entity
+                        .damage(args.entity, 2.0, DamageType::IN_FIRE)
+                        .await;
+                } else {
+                    base_entity
+                        .damage(args.entity, 1.0, DamageType::IN_FIRE)
+                        .await;
+                }
+            }
+        })
+    }
+
     async fn broken(world: &World, block_pos: BlockPos) {
         world
-            .sync_world_event(WorldEvent::FireExtinguished, block_pos, 0)
+            .sync_world_event(WorldEvent::SoundExtinguishFire, block_pos, 0)
             .await;
     }
 }

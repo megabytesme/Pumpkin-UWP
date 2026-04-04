@@ -18,11 +18,14 @@ use pumpkin_util::{
 use super::{
     CommandSender,
     dispatcher::CommandError,
+    errors::command_syntax_error::CommandSyntaxError,
     tree::{CommandTree, RawArgs},
 };
 use crate::entity::EntityBase;
 use crate::world::bossbar::{BossbarColor, BossbarDivisions};
 use crate::{entity::player::Player, server::Server};
+
+pub use entity_anchor::EntityAnchor;
 
 pub mod block;
 pub mod bool;
@@ -34,7 +37,9 @@ mod coordinate;
 pub mod difficulty;
 pub mod entities;
 pub mod entity;
+pub mod entity_anchor;
 pub mod gamemode;
+pub mod gameprofile;
 pub mod message;
 pub mod players;
 pub mod position_2d;
@@ -52,6 +57,8 @@ pub mod time;
 
 /// see [`crate::commands::tree::builder::argument`]
 pub type ConsumeResult<'a> = Pin<Box<dyn Future<Output = Option<Arg<'a>>> + Send + 'a>>;
+pub type ConsumeResultWithSyntax<'a> =
+    Pin<Box<dyn Future<Output = Result<Option<Arg<'a>>, CommandSyntaxError>> + Send + 'a>>;
 
 pub type SuggestResult<'a> =
     Pin<Box<dyn Future<Output = Result<Option<Vec<CommandSuggestion>>, CommandError>> + Send + 'a>>;
@@ -63,6 +70,16 @@ pub trait ArgumentConsumer: Sync + Send + GetClientSideArgParser {
         server: &'a Server,
         args: &mut RawArgs<'a>,
     ) -> ConsumeResult<'a>;
+
+    fn consume_with_syntax<'a>(
+        &'a self,
+        sender: &'a CommandSender,
+        server: &'a Server,
+        args: &mut RawArgs<'a>,
+    ) -> ConsumeResultWithSyntax<'a> {
+        let future = self.consume(sender, server, args);
+        Box::pin(async move { Ok(future.await) })
+    }
 
     /// Used for tab completion (but only if argument suggestion type is "`minecraft:ask_server`"!).
     ///
@@ -93,14 +110,17 @@ pub enum Arg<'a> {
     Entities(Vec<Arc<dyn EntityBase>>),
     Entity(Arc<dyn EntityBase>),
     Players(Vec<Arc<Player>>),
+    GameProfiles(Vec<crate::net::GameProfile>),
     BlockPos(BlockPos),
     Pos3D(Vector3<f64>),
     Pos2D(Vector2<f64>),
-    Rotation(f32, f32),
+    /// (yaw, `is_yaw_relative`, pitch, `is_pitch_relative`)
+    Rotation(f32, bool, f32, bool),
     GameMode(GameMode),
     Difficulty(Difficulty),
     CommandTree(CommandTree),
     Item(&'a str),
+    ItemPredicate(&'a str),
     ResourceLocation(&'a str),
     Block(&'a str),
     BlockPredicate(&'a str),
@@ -117,6 +137,7 @@ pub enum Arg<'a> {
     DamageType(DamageType),
     Effect(&'static StatusEffect),
     Enchantment(&'static Enchantment),
+    EntityAnchor(EntityAnchor),
 }
 
 /// see [`crate::commands::tree::builder::argument`] and [`CommandTree::execute`]/[`crate::commands::tree::builder::NonLeafNodeBuilder::execute`]

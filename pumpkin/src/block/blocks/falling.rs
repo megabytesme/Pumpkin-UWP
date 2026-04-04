@@ -23,12 +23,8 @@ impl FallingBlock {
 }
 
 impl BlockMetadata for FallingBlock {
-    fn namespace(&self) -> &'static str {
-        "minecraft"
-    }
-
-    fn ids(&self) -> &'static [&'static str] {
-        &[Block::GRAVEL.name, Block::SAND.name, Block::RED_SAND.name]
+    fn ids() -> Box<[u16]> {
+        [Block::GRAVEL.id, Block::SAND.id, Block::RED_SAND.id].into()
     }
 }
 
@@ -60,8 +56,8 @@ impl BlockBehaviour for FallingBlock {
             if !Self::can_fall_through(state, block) || args.position.0.y < args.world.min_y {
                 return;
             }
-            FallingEntity::replace_spawn(args.world, *args.position, args.block.default_state.id)
-                .await;
+            let state = args.world.get_block_state(args.position).await;
+            FallingEntity::replace_spawn(args.world, *args.position, state.id).await;
         })
     }
 }

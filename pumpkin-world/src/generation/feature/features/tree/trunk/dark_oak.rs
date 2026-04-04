@@ -3,48 +3,56 @@ use pumpkin_util::{
     math::position::BlockPos,
     random::{RandomGenerator, RandomImpl},
 };
-use serde::Deserialize;
 
-use crate::generation::feature::features::tree::{TreeFeature, TreeNode, trunk::TrunkPlacer};
 use crate::generation::proto_chunk::GenerationCache;
+use crate::{
+    generation::{
+        block_state_provider::BlockStateProvider,
+        feature::features::tree::{TreeFeature, TreeNode, trunk::TrunkPlacer},
+    },
+    world::BlockRegistryExt,
+};
 
-#[derive(Deserialize)]
 pub struct DarkOakTrunkPlacer;
 
 impl DarkOakTrunkPlacer {
     #[expect(clippy::too_many_arguments)]
     pub fn generate<T: GenerationCache>(
+        block_registry: &dyn BlockRegistryExt,
         placer: &TrunkPlacer,
         height: u32,
         start_pos: BlockPos,
         chunk: &mut T,
         random: &mut RandomGenerator,
-        force_dirt: bool,
-        dirt_state: &BlockState,
+        below_trunk_provider: &BlockStateProvider,
         trunk_block: &BlockState,
     ) -> (Vec<TreeNode>, Vec<BlockPos>) {
         let pos = start_pos.down();
-        placer.set_dirt(chunk, &pos, force_dirt, dirt_state);
+        placer.set_dirt(block_registry, chunk, random, &pos, below_trunk_provider);
         placer.set_dirt(
+            block_registry,
             chunk,
+            random,
             &pos.offset(BlockDirection::East.to_offset()),
-            force_dirt,
-            dirt_state,
+            below_trunk_provider,
         );
         placer.set_dirt(
+            block_registry,
             chunk,
+            random,
             &pos.offset(BlockDirection::South.to_offset()),
-            force_dirt,
-            dirt_state,
+            below_trunk_provider,
         );
         placer.set_dirt(
+            block_registry,
             chunk,
+            random,
             &pos.offset(BlockDirection::South.to_offset())
-                .offset(BlockDirection::South.to_offset()),
-            force_dirt,
-            dirt_state,
+                .offset(BlockDirection::East.to_offset()),
+            below_trunk_provider,
         );
-        let y_height = start_pos.0.y + height as i32 - 1;
+        let start_y = start_pos.0.y;
+        let y_height = start_y + height as i32 - 1;
         let max_height = height - random.next_bounded_i32(4) as u32;
         let mut trunk_poses = Vec::new();
         let mut nodes = Vec::new();
@@ -62,10 +70,12 @@ impl DarkOakTrunkPlacer {
                 z += random_direction.to_offset().z;
                 rand -= 1;
             }
-            let pos = BlockPos::new(x, y_height, z);
+
+            let current_y = start_y + y as i32;
+            let pos = BlockPos::new(x, current_y, z);
             // TODO: support multiple chunks
             let state = GenerationCache::get_block_state(chunk, &pos.0);
-            if !TreeFeature::is_air_or_leaves(state.to_state(), state.to_block()) {
+            if !TreeFeature::is_air_or_leaves(state.to_state(), state.to_block_id()) {
                 continue;
             }
             if placer.try_place(chunk, &pos, trunk_block) {
@@ -129,7 +139,7 @@ impl DarkOakTrunkPlacer {
                 nodes.push(TreeNode {
                     center: BlockPos::new(start_pos.0.x + xd, y_height, start_pos.0.z + zd),
                     foliage_radius: 0,
-                    giant_trunk: true,
+                    giant_trunk: false,
                 });
             }
         }

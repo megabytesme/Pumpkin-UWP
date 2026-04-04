@@ -6,11 +6,10 @@ use pumpkin_data::Block;
 use pumpkin_data::block_properties::{BlockProperties, WallTorchLikeProperties};
 use pumpkin_data::entity::EntityType;
 use pumpkin_data::item::Item;
+use pumpkin_data::item_stack::ItemStack;
 use pumpkin_macros::pumpkin_block;
-use pumpkin_world::item::ItemStack;
 use pumpkin_world::world::BlockFlags;
 use std::sync::Arc;
-use uuid::Uuid;
 
 #[pumpkin_block("minecraft:pumpkin")]
 pub struct PumpkinBlock;
@@ -39,15 +38,14 @@ impl crate::block::BlockBehaviour for PumpkinBlock {
                 )
                 .await;
             let entity = Entity::new(
-                Uuid::new_v4(),
                 args.world.clone(),
                 args.position.to_f64(),
                 &EntityType::ITEM,
-                false,
             );
             let item_entity =
                 Arc::new(ItemEntity::new(entity, ItemStack::new(4, &Item::PUMPKIN_SEEDS)).await);
             args.world.spawn_entity(item_entity).await;
+            // TODO: Deduct 1 durability from held shears (skip in Creative mode).
             BlockActionResult::Consume
         })
     }

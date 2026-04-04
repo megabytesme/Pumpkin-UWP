@@ -5,13 +5,15 @@ use crate::item::{ItemBehaviour, ItemMetadata};
 use crate::server::Server;
 use pumpkin_data::BlockDirection;
 use pumpkin_data::block_properties::{BlockProperties, CampfireLikeProperties};
+use pumpkin_data::item_stack::ItemStack;
 use pumpkin_data::sound::{Sound, SoundCategory};
 use pumpkin_data::world::WorldEvent;
 use pumpkin_data::{Block, tag};
+use pumpkin_util::GameMode;
 use pumpkin_util::math::position::BlockPos;
-use pumpkin_world::item::ItemStack;
+use pumpkin_util::math::vector3::Vector3;
 use pumpkin_world::world::BlockFlags;
-use rand::{Rng, rng};
+use rand::{RngExt, rng};
 
 pub struct ShovelItem;
 
@@ -24,17 +26,18 @@ impl ItemMetadata for ShovelItem {
 impl ItemBehaviour for ShovelItem {
     fn use_on_block<'a>(
         &'a self,
-        _item: &'a mut ItemStack,
+        item: &'a mut ItemStack,
         player: &'a Player,
         location: BlockPos,
         face: BlockDirection,
+        _cursor_pos: Vector3<f32>,
         block: &'a Block,
         _server: &'a Server,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         Box::pin(async move {
             let world = player.world();
             // Yes, Minecraft does hardcode these
-            if (block == &Block::GRASS_BLOCK
+            let mut changed = if (block == &Block::GRASS_BLOCK
                 || block == &Block::DIRT
                 || block == &Block::COARSE_DIRT
                 || block == &Block::ROOTED_DIRT
@@ -50,7 +53,10 @@ impl ItemBehaviour for ShovelItem {
                         BlockFlags::NOTIFY_ALL,
                     )
                     .await;
-            }
+                true
+            } else {
+                false
+            };
             if block == &Block::CAMPFIRE || block == &Block::SOUL_CAMPFIRE {
                 let mut campfire_props = CampfireLikeProperties::from_state_id(
                     world.get_block_state(&location).await.id,
@@ -58,7 +64,7 @@ impl ItemBehaviour for ShovelItem {
                 );
                 if campfire_props.lit {
                     world
-                        .sync_world_event(WorldEvent::FireExtinguished, location, 0)
+                        .sync_world_event(WorldEvent::SoundExtinguishFire, location, 0)
                         .await;
 
                     campfire_props.lit = false;
@@ -80,7 +86,13 @@ impl ItemBehaviour for ShovelItem {
                             seed,
                         )
                         .await;
+                    changed = true;
                 }
+            }
+
+            if changed && player.gamemode.load() != GameMode::Creative {
+                // TODO: Handle DamageResult::Broken to broadcast item break and update player slot.
+                let _ = item.damage_item(1);
             }
         })
     }

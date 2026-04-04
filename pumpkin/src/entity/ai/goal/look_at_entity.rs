@@ -5,7 +5,7 @@ use crate::entity::mob::Mob;
 use crate::entity::predicate::EntityPredicate;
 use crate::entity::{EntityBase, player::Player};
 use pumpkin_data::entity::EntityType;
-use rand::Rng;
+use rand::RngExt;
 use std::sync::{Arc, Weak};
 
 #[expect(dead_code)]
@@ -56,8 +56,8 @@ impl LookAtEntityGoal {
         target_type: &'static EntityType,
         range: f32,
     ) -> TargetPredicate {
-        let mut target_predicate = TargetPredicate::non_attackable();
-        target_predicate.base_max_distance = range;
+        let mut target_predicate = TargetPredicate::create_non_attackable();
+        target_predicate.base_max_distance = range as f64; // TODO
         if target_type == &EntityType::PLAYER {
             target_predicate.set_predicate(move |living_entity, _world| {
                 let mob_weak = mob_weak.clone();
@@ -92,18 +92,16 @@ impl Goal for LookAtEntityGoal {
                 }
             }
 
-            let world = &mob_entity.living_entity.entity.world;
+            let world = mob_entity.living_entity.entity.world.load();
             let mob_pos = mob_entity.living_entity.entity.pos.load();
 
             if *self.target_type == EntityType::PLAYER {
                 self.target = world
                     .get_closest_player(mob_pos, self.range.into())
-                    .await
                     .map(|p: Arc<Player>| p as Arc<dyn EntityBase>);
             } else {
-                self.target = world
-                    .get_closest_entity(mob_pos, self.range.into(), Some(&[self.target_type]))
-                    .await;
+                self.target =
+                    world.get_closest_entity(mob_pos, self.range.into(), Some(&[self.target_type]));
             }
 
             self.target.is_some()
@@ -119,7 +117,7 @@ impl Goal for LookAtEntityGoal {
                 }
                 let mob_pos = mob_entity.living_entity.entity.pos.load();
                 let target_pos = target.get_entity().pos.load();
-                if mob_pos.squared_distance_to_vec(target_pos) as f32 > (self.range * self.range) {
+                if mob_pos.squared_distance_to_vec(&target_pos) as f32 > (self.range * self.range) {
                     return false;
                 }
                 return self.look_time > 0;
@@ -146,8 +144,19 @@ impl Goal for LookAtEntityGoal {
             if let Some(target) = &self.target
                 && target.get_entity().is_alive()
             {
-                let target_pos = target.get_entity().pos.load();
-                mob_entity.living_entity.entity.look_at(target_pos);
+                let target_entity = target.get_entity();
+                let target_pos = target_entity.pos.load();
+                let look_y = if self.look_forward {
+                    mob_entity.living_entity.entity.get_eye_y()
+                } else {
+                    target_entity.get_eye_y()
+                };
+                mob_entity.look_control.lock().await.look_at(
+                    mob,
+                    target_pos.x,
+                    look_y,
+                    target_pos.z,
+                );
                 self.look_time -= 1;
             }
         })

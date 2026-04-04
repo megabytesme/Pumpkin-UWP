@@ -2,9 +2,10 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use crate::{server::Server, world::portal::end::EndPortal};
+use pumpkin_data::item_stack::ItemStack;
 use pumpkin_data::{Block, BlockDirection, item::Item};
 use pumpkin_util::math::position::BlockPos;
-use pumpkin_world::item::ItemStack;
+use pumpkin_util::math::vector3::Vector3;
 use pumpkin_world::world::BlockFlags;
 
 use crate::item::{ItemBehaviour, ItemMetadata};
@@ -25,6 +26,7 @@ impl ItemBehaviour for EnderEyeItem {
         player: &'a Player,
         location: BlockPos,
         _face: BlockDirection,
+        _cursor_pos: Vector3<f32>,
         block: &'a Block,
         _server: &'a Server,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
@@ -53,7 +55,7 @@ impl ItemBehaviour for EnderEyeItem {
                 .set_block_state(&location, new_state_id, BlockFlags::empty())
                 .await;
 
-            EndPortal::get_new_portal(world, location).await;
+            EndPortal::get_new_portal(&world, location).await;
         })
     }
 

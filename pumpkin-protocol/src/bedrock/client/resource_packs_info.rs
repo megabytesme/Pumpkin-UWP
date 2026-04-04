@@ -1,5 +1,6 @@
-use crate::serial::PacketWrite;
 use pumpkin_macros::packet;
+
+use crate::serial::PacketWrite;
 
 #[derive(PacketWrite)]
 #[packet(6)]
@@ -10,33 +11,19 @@ pub struct CResourcePacksInfo {
     is_vibrant_visuals_force_disabled: bool,
     world_template_id: uuid::Uuid,
     world_template_version: String,
-    resource_packs_size: u16,
-    resource_packs: Vec<ResourcePack>,
-}
-
-#[derive(PacketWrite)]
-pub struct ResourcePack {
-    pack_id: uuid::Uuid,
-    version: String,
-    size: u64,
-    content_key: String,
-    subpack_name: String,
-    content_identity: String,
-    has_scripts: bool,
-    is_addon_pack: bool,
-    is_raytracing_capable: bool,
-    cdn_url: String,
+    resource_packs_size: u16, // TODO: Add more
 }
 
 impl CResourcePacksInfo {
-    pub fn new(
+    #[must_use]
+    #[expect(clippy::fn_params_excessive_bools)]
+    pub const fn new(
         resource_pack_required: bool,
         has_addon_packs: bool,
         has_scripts: bool,
         is_vibrant_visuals_force_disabled: bool,
         world_template_id: uuid::Uuid,
         world_template_version: String,
-        resource_packs: Vec<ResourcePack>,
     ) -> Self {
         Self {
             resource_pack_required,
@@ -45,8 +32,8 @@ impl CResourcePacksInfo {
             is_vibrant_visuals_force_disabled,
             world_template_id,
             world_template_version,
-            resource_packs_size: resource_packs.len() as u16,
-            resource_packs,
+            // TODO
+            resource_packs_size: 0,
         }
     }
 }

@@ -1,12 +1,10 @@
+use crate::command::node::dispatcher::CommandDispatcher;
 use pumpkin_config::BasicConfiguration;
 use pumpkin_util::{
     PermissionLvl,
     permission::{Permission, PermissionDefault, PermissionRegistry},
 };
-
-use crate::PERMISSION_REGISTRY;
-
-use super::dispatcher::CommandDispatcher;
+use tokio::sync::RwLock;
 
 mod ban;
 mod banip;
@@ -39,10 +37,13 @@ mod playsound;
 mod plugin;
 mod plugins;
 mod pumpkin;
+mod rotate;
 mod say;
 mod seed;
 mod setblock;
+mod setidletimeout;
 mod setworldspawn;
+mod spawnpoint;
 mod stop;
 mod stopsound;
 mod summon;
@@ -51,20 +52,26 @@ mod tellraw;
 mod tick;
 mod time;
 mod title;
+mod tps;
 mod transfer;
 mod weather;
 mod whitelist;
 mod worldborder;
 
 #[must_use]
-pub async fn default_dispatcher(basic_config: &BasicConfiguration) -> CommandDispatcher {
-    let mut dispatcher = CommandDispatcher::default();
+pub async fn default_dispatcher(
+    registry: &RwLock<PermissionRegistry>,
+    basic_config: &BasicConfiguration,
+) -> CommandDispatcher {
+    let mut dispatcher = crate::command::dispatcher::CommandDispatcher::default();
 
-    register_permissions().await;
+    let mut registry_lock = registry.write().await;
+    let registry = &mut *registry_lock;
+
+    register_permissions(registry);
 
     // Zero
     dispatcher.register(pumpkin::init_command_tree(), "pumpkin:command.pumpkin");
-    dispatcher.register(help::init_command_tree(), "minecraft:command.help");
     dispatcher.register(list::init_command_tree(), "minecraft:command.list");
     dispatcher.register(me::init_command_tree(), "minecraft:command.me");
     dispatcher.register(msg::init_command_tree(), "minecraft:command.msg");
@@ -85,7 +92,7 @@ pub async fn default_dispatcher(basic_config: &BasicConfiguration) -> CommandDis
     dispatcher.register(enchant::init_command_tree(), "minecraft:command.enchant");
     dispatcher.register(clear::init_command_tree(), "minecraft:command.clear");
     dispatcher.register(setblock::init_command_tree(), "minecraft:command.setblock");
-    dispatcher.register(seed::init_command_tree(), "minecraft:command.seed");
+    dispatcher.register(tps::init_command_tree(), "pumpkin:command.tps");
     dispatcher.register(fill::init_command_tree(), "minecraft:command.fill");
     dispatcher.register(
         playsound::init_command_tree(),
@@ -100,15 +107,12 @@ pub async fn default_dispatcher(basic_config: &BasicConfiguration) -> CommandDis
     );
     dispatcher.register(weather::init_command_tree(), "minecraft:command.weather");
     dispatcher.register(particle::init_command_tree(), "minecraft:command.particle");
+    dispatcher.register(rotate::init_command_tree(), "minecraft:command.rotate");
     dispatcher.register(damage::init_command_tree(), "minecraft:command.damage");
     dispatcher.register(bossbar::init_command_tree(), "minecraft:command.bossbar");
     dispatcher.register(say::init_command_tree(), "minecraft:command.say");
     dispatcher.register(gamemode::init_command_tree(), "minecraft:command.gamemode");
     dispatcher.register(gamerule::init_command_tree(), "minecraft:command.gamerule");
-    dispatcher.register(
-        difficulty::init_command_tree(),
-        "minecraft:command.difficulty",
-    );
     dispatcher.register(
         stopsound::init_command_tree(),
         "minecraft:command.stopsound",
@@ -120,6 +124,10 @@ pub async fn default_dispatcher(basic_config: &BasicConfiguration) -> CommandDis
     dispatcher.register(
         setworldspawn::init_command_tree(),
         "minecraft:command.setworldspawn",
+    );
+    dispatcher.register(
+        spawnpoint::init_command_tree(),
+        "minecraft:command.spawnpoint",
     );
     dispatcher.register(data::init_command_tree(), "minecraft:command.data");
     // Three
@@ -138,26 +146,43 @@ pub async fn default_dispatcher(basic_config: &BasicConfiguration) -> CommandDis
         "minecraft:command.whitelist",
     );
     dispatcher.register(transfer::init_command_tree(), "minecraft:command.transfer");
-    // Four
-    dispatcher.register(stop::init_command_tree(), "minecraft:command.stop");
+    dispatcher.register(
+        setidletimeout::init_command_tree(),
+        "minecraft:command.setidletimeout",
+    );
+
+    let mut dispatcher = {
+        let mut wrapper_dispatcher = CommandDispatcher::new();
+        wrapper_dispatcher.fallback_dispatcher = dispatcher;
+        wrapper_dispatcher
+    };
+
+    difficulty::register(&mut dispatcher, registry);
+    help::register(&mut dispatcher, registry);
+    seed::register(&mut dispatcher, registry);
+    stop::register(&mut dispatcher, registry);
 
     dispatcher
 }
 
-async fn register_permissions() {
-    let mut registry = PERMISSION_REGISTRY.write().await;
-
+fn register_permissions(registry: &mut PermissionRegistry) {
     // Register level 0 permissions (allowed by default)
-    register_level_0_permissions(&mut registry);
+    register_level_0_permissions(registry);
 
     // Register level 2 permissions (OP level 2)
-    register_level_2_permissions(&mut registry);
+    register_level_2_permissions(registry);
 
     // Register level 3 permissions (OP level 3)
-    register_level_3_permissions(&mut registry);
+    register_level_3_permissions(registry);
 
-    // Register level 4 permissions (OP level 4)
-    register_level_4_permissions(&mut registry);
+    // Register our entity selector permission as well.
+    registry
+        .register_permission(Permission::new(
+            "minecraft:command.selector",
+            "Allows a player to use selector variables",
+            PermissionDefault::Allow,
+        ))
+        .unwrap();
 }
 
 fn register_level_0_permissions(registry: &mut PermissionRegistry) {
@@ -166,13 +191,6 @@ fn register_level_0_permissions(registry: &mut PermissionRegistry) {
         .register_permission(Permission::new(
             "pumpkin:command.pumpkin",
             "Shows information about the Pumpkin server",
-            PermissionDefault::Allow,
-        ))
-        .unwrap();
-    registry
-        .register_permission(Permission::new(
-            "minecraft:command.help",
-            "Lists available commands and their usage",
             PermissionDefault::Allow,
         ))
         .unwrap();
@@ -260,13 +278,6 @@ fn register_level_2_permissions(registry: &mut PermissionRegistry) {
         .unwrap();
     registry
         .register_permission(Permission::new(
-            "minecraft:command.seed",
-            "Displays the world seed",
-            PermissionDefault::Op(PermissionLvl::Two),
-        ))
-        .unwrap();
-    registry
-        .register_permission(Permission::new(
             "minecraft:command.fill",
             "Fills a region with a specific block",
             PermissionDefault::Op(PermissionLvl::Two),
@@ -323,6 +334,13 @@ fn register_level_2_permissions(registry: &mut PermissionRegistry) {
         .unwrap();
     registry
         .register_permission(Permission::new(
+            "minecraft:command.rotate",
+            "Changes the rotation of an entity",
+            PermissionDefault::Op(PermissionLvl::Two),
+        ))
+        .unwrap();
+    registry
+        .register_permission(Permission::new(
             "minecraft:command.damage",
             "Damages entities",
             PermissionDefault::Op(PermissionLvl::Two),
@@ -372,13 +390,6 @@ fn register_level_2_permissions(registry: &mut PermissionRegistry) {
         .unwrap();
     registry
         .register_permission(Permission::new(
-            "minecraft:command.difficulty",
-            "Sets the difficulty of the world",
-            PermissionDefault::Op(PermissionLvl::Two),
-        ))
-        .unwrap();
-    registry
-        .register_permission(Permission::new(
             "minecraft:command.data",
             "Query and modify data of entities and blocks",
             PermissionDefault::Op(PermissionLvl::Two),
@@ -391,8 +402,23 @@ fn register_level_2_permissions(registry: &mut PermissionRegistry) {
             PermissionDefault::Op(PermissionLvl::Two),
         ))
         .unwrap();
+    registry
+        .register_permission(Permission::new(
+            "minecraft:command.spawnpoint",
+            "Sets the spawn point for a player",
+            PermissionDefault::Op(PermissionLvl::Two),
+        ))
+        .unwrap();
+    registry
+        .register_permission(Permission::new(
+            "pumpkin:command.tps",
+            "Displays the server TPS and MSPT",
+            PermissionDefault::Op(PermissionLvl::Two),
+        ))
+        .unwrap();
 }
 
+#[expect(clippy::too_many_lines)]
 fn register_level_3_permissions(registry: &mut PermissionRegistry) {
     // Register permissions for commands with PermissionLvl::Three
     registry
@@ -493,15 +519,11 @@ fn register_level_3_permissions(registry: &mut PermissionRegistry) {
             PermissionDefault::Op(PermissionLvl::Three),
         ))
         .unwrap();
-}
-
-fn register_level_4_permissions(registry: &mut PermissionRegistry) {
-    // Register permissions for commands with PermissionLvl::Four
     registry
         .register_permission(Permission::new(
-            "minecraft:command.stop",
-            "Stops the server",
-            PermissionDefault::Op(PermissionLvl::Four),
+            "minecraft:command.setidletimeout",
+            "Sets the time before idle players are kicked",
+            PermissionDefault::Op(PermissionLvl::Three),
         ))
         .unwrap();
 }

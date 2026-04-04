@@ -5,12 +5,12 @@ use crate::entity::r#type::from_type;
 use crate::item::{ItemBehaviour, ItemMetadata};
 use crate::server::Server;
 use pumpkin_data::entity::entity_from_egg;
+use pumpkin_data::item_stack::ItemStack;
 use pumpkin_data::{Block, BlockDirection};
 use pumpkin_util::math::position::BlockPos;
 use pumpkin_util::math::vector3::Vector3;
 use pumpkin_util::math::wrap_degrees;
 use pumpkin_world::block::entities::mob_spawner::MobSpawnerBlockEntity;
-use pumpkin_world::item::ItemStack;
 use uuid::Uuid;
 
 pub struct SpawnEggItem;
@@ -28,6 +28,7 @@ impl ItemBehaviour for SpawnEggItem {
         player: &'a Player,
         location: BlockPos,
         face: BlockDirection,
+        _cursor_pos: Vector3<f32>,
         _block: &'a Block,
         _server: &'a Server,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
@@ -54,7 +55,7 @@ impl ItemBehaviour for SpawnEggItem {
                 // Create rotation like Vanilla
                 let yaw = wrap_degrees(rand::random::<f32>() * 360.0) % 360.0;
 
-                let mob = from_type(entity_type, pos, world, Uuid::new_v4()).await;
+                let mob = from_type(entity_type, pos, &world, Uuid::new_v4()).await;
 
                 // Set the rotation
                 mob.get_entity().set_rotation(yaw, 0.0);

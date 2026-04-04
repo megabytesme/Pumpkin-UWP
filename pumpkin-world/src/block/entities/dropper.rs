@@ -1,9 +1,9 @@
 use crate::block::entities::BlockEntity;
 use crate::inventory::{Clearable, Inventory, InventoryFuture, split_stack};
-use crate::item::ItemStack;
+use pumpkin_data::item_stack::ItemStack;
 use pumpkin_nbt::compound::NbtCompound;
 use pumpkin_util::math::position::BlockPos;
-use rand::{Rng, rng};
+use rand::{RngExt, rng};
 use std::any::Any;
 use std::array::from_fn;
 use std::pin::Pin;
@@ -22,11 +22,7 @@ impl BlockEntity for DropperBlockEntity {
         &'a self,
         nbt: &'a mut NbtCompound,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
-        Box::pin(async move {
-            self.write_data(nbt, &self.items, true).await;
-        })
-        // Safety precaution
-        //self.clear().await;
+        self.write_inventory_nbt(nbt, true)
     }
 
     fn from_nbt(nbt: &pumpkin_nbt::compound::NbtCompound, position: BlockPos) -> Self
@@ -60,6 +56,10 @@ impl BlockEntity for DropperBlockEntity {
         self.dirty.load(Ordering::Relaxed)
     }
 
+    fn clear_dirty(&self) {
+        self.dirty.store(false, Ordering::Relaxed);
+    }
+
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
@@ -69,6 +69,7 @@ impl DropperBlockEntity {
     pub const INVENTORY_SIZE: usize = 9;
     pub const ID: &'static str = "minecraft:dropper";
 
+    #[must_use]
     pub fn new(position: BlockPos) -> Self {
         Self {
             position,
@@ -100,7 +101,7 @@ impl Inventory for DropperBlockEntity {
 
     fn is_empty(&self) -> InventoryFuture<'_, bool> {
         Box::pin(async move {
-            for slot in self.items.iter() {
+            for slot in &self.items {
                 if !slot.lock().await.is_empty() {
                     return false;
                 }
@@ -119,17 +120,23 @@ impl Inventory for DropperBlockEntity {
             let mut removed = ItemStack::EMPTY.clone();
             let mut guard = self.items[slot].lock().await;
             std::mem::swap(&mut removed, &mut *guard);
+            self.mark_dirty();
             removed
         })
     }
 
     fn remove_stack_specific(&self, slot: usize, amount: u8) -> InventoryFuture<'_, ItemStack> {
-        Box::pin(async move { split_stack(&self.items, slot, amount).await })
+        Box::pin(async move {
+            let res = split_stack(&self.items, slot, amount).await;
+            self.mark_dirty();
+            res
+        })
     }
 
     fn set_stack(&self, slot: usize, stack: ItemStack) -> InventoryFuture<'_, ()> {
         Box::pin(async move {
             *self.items[slot].lock().await = stack;
+            self.mark_dirty();
         })
     }
 
@@ -145,9 +152,10 @@ impl Inventory for DropperBlockEntity {
 impl Clearable for DropperBlockEntity {
     fn clear(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
         Box::pin(async move {
-            for slot in self.items.iter() {
+            for slot in &self.items {
                 *slot.lock().await = ItemStack::EMPTY.clone();
             }
+            self.mark_dirty();
         })
     }
 }

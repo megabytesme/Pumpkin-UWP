@@ -9,7 +9,6 @@ use crate::{
 pub struct CResourcePackStackPacket {
     // https://mojang.github.io/bedrock-protocol-docs/html/ResourcePackStackPacket.html
     resource_pack_required: bool,
-    addons_list_size: VarUInt,
     texture_pack_list_size: VarUInt,
     game_version: String,
     experiments: Experiments,
@@ -18,9 +17,9 @@ pub struct CResourcePackStackPacket {
 }
 
 impl CResourcePackStackPacket {
-    pub fn new(
+    #[must_use]
+    pub const fn new(
         resource_pack_required: bool,
-        addons_list_size: VarUInt,
         texture_pack_list_size: VarUInt,
         game_version: String,
         experiments: Experiments,
@@ -28,7 +27,6 @@ impl CResourcePackStackPacket {
     ) -> Self {
         Self {
             resource_pack_required,
-            addons_list_size,
             texture_pack_list_size,
             game_version,
             experiments,

@@ -1,17 +1,24 @@
-use pumpkin_data::sound::SoundCategory;
-use pumpkin_util::text::TextComponent;
-use rand::{Rng, rng};
+use std::sync::Arc;
 
-use crate::command::{
-    CommandExecutor, CommandResult, CommandSender,
-    args::{
-        Arg, ConsumedArgs, FindArg, bounded_num::BoundedNumArgumentConsumer,
-        players::PlayersArgumentConsumer, position_3d::Position3DArgumentConsumer,
-        sound::SoundArgumentConsumer, sound_category::SoundCategoryArgumentConsumer,
-    },
-    tree::{CommandTree, builder::argument},
-};
+use pumpkin_data::sound::SoundCategory;
+use pumpkin_data::translation;
+use pumpkin_util::text::TextComponent;
+use rand::{RngExt, rng};
+
 use crate::entity::EntityBase;
+use crate::{
+    command::{
+        CommandExecutor, CommandResult, CommandSender,
+        args::{
+            Arg, ConsumedArgs, FindArg, bounded_num::BoundedNumArgumentConsumer,
+            players::PlayersArgumentConsumer, position_3d::Position3DArgumentConsumer,
+            sound::SoundArgumentConsumer, sound_category::SoundCategoryArgumentConsumer,
+        },
+        dispatcher::CommandError,
+        tree::{CommandTree, builder::argument},
+    },
+    entity::player::Player,
+};
 
 /// Command: playsound <sound> [<source>] [<targets>] [<pos>] [<volume>] [<pitch>] [<minVolume>]
 ///
@@ -34,13 +41,13 @@ const ARG_PITCH: &str = "pitch";
 const ARG_MIN_VOLUME: &str = "minVolume";
 
 // Volume must be >= 0, no upper limit
-fn volume_consumer() -> BoundedNumArgumentConsumer<f32> {
+const fn volume_consumer() -> BoundedNumArgumentConsumer<f32> {
     BoundedNumArgumentConsumer::new().name(ARG_VOLUME).min(0.0)
 }
 
 // Pitch must be between 0.0 and 2.0
 // Values below 0.5 are treated as 0.5
-fn pitch_consumer() -> BoundedNumArgumentConsumer<f32> {
+const fn pitch_consumer() -> BoundedNumArgumentConsumer<f32> {
     BoundedNumArgumentConsumer::new()
         .name(ARG_PITCH)
         .min(0.0)
@@ -49,7 +56,7 @@ fn pitch_consumer() -> BoundedNumArgumentConsumer<f32> {
 
 // Minimum volume must be between 0.0 and 1.0
 // Controls the volume for players outside normal hearing range
-fn min_volume_consumer() -> BoundedNumArgumentConsumer<f32> {
+const fn min_volume_consumer() -> BoundedNumArgumentConsumer<f32> {
     BoundedNumArgumentConsumer::new()
         .name(ARG_MIN_VOLUME)
         .min(0.0)
@@ -78,13 +85,13 @@ impl CommandExecutor for Executor {
                 });
 
             // Get target players, defaults to sender if not specified
-            let targets = if let Ok(players) = PlayersArgumentConsumer::find_arg(args, ARG_TARGETS)
-            {
-                players
-            } else if let Some(player) = sender.as_player() {
-                &[player]
-            } else {
-                return Ok(());
+            let targets: &[Arc<Player>] = match (
+                PlayersArgumentConsumer::find_arg(args, ARG_TARGETS),
+                sender.as_player(),
+            ) {
+                (Ok(players), _) => players,
+                (_, Some(player)) => &[player],
+                (_, _) => &[],
             };
 
             // Get optional position, defaults to target's position
@@ -121,7 +128,7 @@ impl CommandExecutor for Executor {
 
                 // Check if player can hear the sound based on volume and distance
                 let player_pos = target.living_entity.entity.pos.load();
-                let distance = player_pos.squared_distance_to_vec(pos);
+                let distance = player_pos.squared_distance_to_vec(&pos);
                 let max_distance: f64 = (16.0 * volume).into(); // 16 blocks is base distance at volume 1.0
 
                 if distance <= max_distance || min_volume > 0.0 {
@@ -134,15 +141,16 @@ impl CommandExecutor for Executor {
 
             // Send appropriate message based on results
             if players_who_heard == 0 {
-                sender
-                    .send_message(TextComponent::translate("commands.playsound.failed", []))
-                    .await;
+                Err(CommandError::CommandFailed(TextComponent::translate(
+                    "commands.playsound.failed",
+                    [],
+                )))
             } else {
                 let sound_name = sound.to_name();
                 if players_who_heard == 1 {
                     sender
                         .send_message(TextComponent::translate(
-                            "commands.playsound.success.single",
+                            translation::COMMANDS_PLAYSOUND_SUCCESS_SINGLE,
                             [
                                 TextComponent::text(sound_name),
                                 targets[0].get_display_name().await,
@@ -152,7 +160,7 @@ impl CommandExecutor for Executor {
                 } else {
                     sender
                         .send_message(TextComponent::translate(
-                            "commands.playsound.success.multiple",
+                            translation::COMMANDS_PLAYSOUND_SUCCESS_MULTIPLE,
                             [
                                 TextComponent::text(sound_name),
                                 TextComponent::text(players_who_heard.to_string()),
@@ -160,9 +168,9 @@ impl CommandExecutor for Executor {
                         ))
                         .await;
                 }
-            }
 
-            Ok(())
+                Ok(players_who_heard)
+            }
         })
     }
 }

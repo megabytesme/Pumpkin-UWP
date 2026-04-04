@@ -1,21 +1,18 @@
 use pumpkin_data::{
-    Block, BlockDirection, BlockState,
+    Block, BlockState,
     block_properties::{BambooLeaves, BambooLikeProperties, BlockProperties, Integer0To1},
     tag,
-    tag::Taggable,
 };
 use pumpkin_util::{
     math::position::BlockPos,
     random::{RandomGenerator, RandomImpl},
 };
-use serde::Deserialize;
 
 use crate::generation::proto_chunk::GenerationCache;
 use crate::world::BlockRegistryExt;
 
-#[derive(Deserialize)]
 pub struct BambooFeature {
-    probability: f32,
+    pub probability: f32,
 }
 
 impl BambooFeature {
@@ -32,7 +29,8 @@ impl BambooFeature {
     ) -> bool {
         let mut i = 0;
         if chunk.is_air(&pos.0) {
-            if block_registry.can_place_at(&Block::BAMBOO, chunk, &pos, BlockDirection::Up) {
+            if block_registry.can_place_at(&Block::BAMBOO, Block::BAMBOO.default_state, chunk, &pos)
+            {
                 let height = random.next_bounded_i32(12) + 5;
                 if random.next_f32() < self.probability {
                     let rnd = random.next_bounded_i32(4) + 1;
@@ -41,7 +39,7 @@ impl BambooFeature {
                             let block_below =
                                 BlockPos::new(x, chunk.top_block_height_exclusive(x, z) - 1, z);
                             let block = GenerationCache::get_block_state(chunk, &block_below.0);
-                            if !block.to_block().has_tag(&tag::Block::MINECRAFT_DIRT) {
+                            if !tag::Block::MINECRAFT_DIRT.1.contains(&block.to_block_id()) {
                                 continue;
                             }
                             chunk.set_block_state(&block_below.0, Block::PODZOL.default_state);

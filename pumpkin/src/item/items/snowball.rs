@@ -3,12 +3,11 @@ use std::sync::Arc;
 
 use crate::entity::Entity;
 use crate::entity::player::Player;
-use crate::entity::projectile::ThrownItemEntity;
+use crate::entity::projectile::snowball::SnowballEntity;
 use crate::item::{ItemBehaviour, ItemMetadata};
 use pumpkin_data::entity::EntityType;
 use pumpkin_data::item::Item;
 use pumpkin_data::sound::Sound;
-use uuid::Uuid;
 
 pub struct SnowBallItem;
 
@@ -36,17 +35,18 @@ impl ItemBehaviour for SnowBallItem {
                     &position,
                 )
                 .await;
-            let entity = Entity::new(
-                Uuid::new_v4(),
-                world.clone(),
-                position,
-                &EntityType::SNOWBALL,
-                false,
-            );
-            let snowball = ThrownItemEntity::new(entity, &player.living_entity.entity);
+            let entity = Entity::new(world.clone(), position, &EntityType::SNOWBALL);
+            let snowball = SnowballEntity::new_shot(entity, &player.living_entity.entity).await;
             let yaw = player.living_entity.entity.yaw.load();
             let pitch = player.living_entity.entity.pitch.load();
-            snowball.set_velocity_from(&player.living_entity.entity, pitch, yaw, 0.0, POWER, 1.0);
+            snowball.thrown.set_velocity_from(
+                &player.living_entity.entity,
+                pitch,
+                yaw,
+                0.0,
+                POWER,
+                1.0,
+            );
             world.spawn_entity(Arc::new(snowball)).await;
         })
     }

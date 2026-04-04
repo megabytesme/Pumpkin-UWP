@@ -8,14 +8,13 @@ use crate::item::{ItemBehaviour, ItemMetadata};
 use crate::server::Server;
 use pumpkin_data::entity::EntityType;
 use pumpkin_data::item::Item;
+use pumpkin_data::item_stack::ItemStack;
 use pumpkin_data::sound::{Sound, SoundCategory};
 use pumpkin_data::{Block, BlockDirection};
 use pumpkin_util::math::boundingbox::BoundingBox;
 use pumpkin_util::math::position::BlockPos;
 use pumpkin_util::math::vector3::Vector3;
 use pumpkin_util::math::wrap_degrees;
-use pumpkin_world::item::ItemStack;
-use uuid::Uuid;
 
 pub struct ArmorStandItem;
 
@@ -45,6 +44,7 @@ impl ItemBehaviour for ArmorStandItem {
         player: &'a Player,
         location: BlockPos,
         face: BlockDirection,
+        _cursor_pos: Vector3<f32>,
         _block: &'a Block,
         _server: &'a Server,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
@@ -72,18 +72,12 @@ impl ItemBehaviour for ArmorStandItem {
             );
 
             if world.is_space_empty(bounding_box).await
-                && world.get_entities_at_box(&bounding_box).await.is_empty()
+                && world.get_entities_at_box(&bounding_box).is_empty()
             {
                 let (player_yaw, _) = player.rotation();
                 let rotation = ((wrap_degrees(player_yaw - 180.0) + 22.5) / 45.0).floor() * 45.0;
 
-                let entity = Entity::new(
-                    Uuid::new_v4(),
-                    world.clone(),
-                    position,
-                    &EntityType::ARMOR_STAND,
-                    false,
-                );
+                let entity = Entity::new(world.clone(), position, &EntityType::ARMOR_STAND);
 
                 entity.set_rotation(rotation, 0.0);
 

@@ -11,8 +11,8 @@ use crate::screen_handler::InventoryPlayer;
 
 use pumpkin_data::data_component_impl::EquipmentSlot;
 use pumpkin_data::item::Item;
+use pumpkin_data::item_stack::ItemStack;
 use pumpkin_world::inventory::Inventory;
-use pumpkin_world::item::ItemStack;
 use tokio::{sync::Mutex, time::timeout};
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -210,7 +210,7 @@ pub trait Slot: Send + Sync {
                 self.on_take_item(player, stack).await;
             }
 
-            stack.unwrap_or(ItemStack::EMPTY.clone())
+            stack.unwrap_or_else(|| ItemStack::EMPTY.clone())
         })
     }
 
@@ -232,9 +232,7 @@ pub trait Slot: Send + Sync {
                     .min(stack.item_count)
                     .min(self.get_max_item_count_for_stack(&stack).await - stack_self.item_count);
 
-                if min_count == 0 {
-                    stack
-                } else {
+                if min_count != 0 {
                     if stack_self.is_empty() {
                         drop(stack_self);
                         self.set_stack(stack.split(min_count)).await;
@@ -245,9 +243,10 @@ pub trait Slot: Send + Sync {
                         drop(stack_self);
                         self.set_stack(cloned_stack).await;
                     }
-
-                    stack
                 }
+            }
+            if stack.is_empty() {
+                ItemStack::EMPTY.clone()
             } else {
                 stack
             }

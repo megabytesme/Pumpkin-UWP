@@ -2,15 +2,19 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use crate::command::CommandSender;
-use crate::command::args::ConsumeResult;
+use crate::command::args::{ConsumeResult, ConsumeResultWithSyntax};
 use crate::command::dispatcher::CommandError;
-use crate::command::tree::RawArgs;
+use crate::command::errors::command_syntax_error::{CommandSyntaxError, CommandSyntaxErrorContext};
+use crate::command::errors::error_types;
+use crate::command::tree::{RawArg, RawArgs};
 use crate::entity::EntityBase;
 use crate::server::Server;
-use pumpkin_data::entity::EntityType;
+use pumpkin_data::{entity::EntityType, translation};
 use pumpkin_nbt::compound::NbtCompound;
 use pumpkin_protocol::java::client::play::{ArgumentType, SuggestionProviders};
 use pumpkin_util::GameMode;
+use pumpkin_util::text::TextComponent;
+use tracing::debug;
 use uuid::Uuid;
 
 use super::super::args::ArgumentConsumer;
@@ -43,7 +47,7 @@ pub enum ComparableValueCondition<T> {
     Between(T, T),
 }
 
-#[derive(Copy, Clone, PartialEq)]
+#[derive(Copy, Clone, PartialEq, Eq)]
 pub enum EntityFilterSort {
     Arbitrary,
     Nearest,
@@ -125,12 +129,12 @@ impl FromStr for EntityFilter {
 pub struct TargetSelector {
     pub selector_type: EntitySelectorType,
     pub conditions: Vec<EntityFilter>,
-    pub player_only: bool,
 }
 
 impl TargetSelector {
     /// Creates a new target selector with the specified type and default conditions.
-    fn new(selector_type: EntitySelectorType) -> Self {
+    #[must_use]
+    pub fn new(selector_type: EntitySelectorType) -> Self {
         let mut filter = Vec::new();
         match selector_type {
             EntitySelectorType::Source => filter.push(EntityFilter::Limit(1)),
@@ -149,16 +153,34 @@ impl TargetSelector {
             _ => {}
         }
         Self {
-            player_only: matches!(
-                selector_type,
-                EntitySelectorType::AllPlayers
-                    | EntitySelectorType::NearestPlayer
-                    | EntitySelectorType::RandomPlayer
-                    | EntitySelectorType::NamedPlayer(_)
-            ),
             selector_type,
             conditions: filter,
         }
+    }
+
+    const fn base_includes_entities(&self) -> bool {
+        matches!(
+            self.selector_type,
+            EntitySelectorType::AllEntities | EntitySelectorType::NearestEntity
+        )
+    }
+
+    #[must_use]
+    pub fn includes_entities(&self) -> bool {
+        let player_type = EntityType::from_name("player").expect("entity type player must exist");
+        let mut includes_entities = self.base_includes_entities();
+
+        for condition in &self.conditions {
+            if let EntityFilter::Type(ValueCondition::Equals(entity_type)) = condition {
+                includes_entities = *entity_type != player_type;
+            } else if let EntityFilter::Type(ValueCondition::NotEquals(entity_type)) = condition
+                && *entity_type == player_type
+            {
+                includes_entities = true;
+            }
+        }
+
+        includes_entities
     }
 
     #[must_use]
@@ -192,40 +214,101 @@ impl FromStr for TargetSelector {
     type Err = String;
 
     fn from_str(arg: &str) -> Result<Self, Self::Err> {
-        if arg.starts_with('@') {
-            let body: Vec<_> = arg.splitn(2, '[').collect();
-            let r#type = match body[0] {
-                "@a" => EntitySelectorType::AllPlayers,
-                "@e" => EntitySelectorType::AllEntities,
-                "@s" => EntitySelectorType::Source,
-                "@p" => EntitySelectorType::NearestPlayer,
-                "@r" => EntitySelectorType::RandomPlayer,
-                "@n" => EntitySelectorType::NearestEntity,
-                _ => return Err(format!("Invalid target selector type {}", body[0])),
-            };
-            let mut selector = Self::new(r#type);
-            if body.len() < 2 {
-                // No conditions specified, return the selector with default conditions
-                return Ok(selector);
-            }
-            // parse conditions
-            if body[1].as_bytes()[body[1].len() - 1] != b']' {
-                return Err("Target selector must end with ]".to_string());
-            }
-            let conditions: Vec<_> = body[1][..body[1].len() - 1]
-                .split(',')
-                .map(str::trim)
-                .collect();
-            for s in conditions {
-                selector.conditions.push(EntityFilter::from_str(s)?);
-            }
-            Ok(selector)
-        } else if let Ok(uuid) = Uuid::parse_str(arg) {
-            Ok(Self::new(EntitySelectorType::Uuid(uuid)))
-        } else {
-            Ok(Self::new(EntitySelectorType::NamedPlayer(arg.to_string())))
+        parse_target_selector(arg).map_err(|error| error.message)
+    }
+}
+
+#[derive(Debug)]
+struct TargetSelectorParseError {
+    message: String,
+    cursor: usize,
+}
+
+fn parse_target_selector(arg: &str) -> Result<TargetSelector, TargetSelectorParseError> {
+    if !arg.starts_with('@') {
+        return Uuid::parse_str(arg).map_or_else(
+            |_| {
+                Ok(TargetSelector::new(EntitySelectorType::NamedPlayer(
+                    arg.to_string(),
+                )))
+            },
+            |uuid| Ok(TargetSelector::new(EntitySelectorType::Uuid(uuid))),
+        );
+    }
+
+    let selector_type_end = arg.find('[').unwrap_or(arg.len());
+    let type_str = &arg[..selector_type_end];
+    let selector_type = match type_str {
+        "@a" => EntitySelectorType::AllPlayers,
+        "@e" => EntitySelectorType::AllEntities,
+        "@s" => EntitySelectorType::Source,
+        "@p" => EntitySelectorType::NearestPlayer,
+        "@r" => EntitySelectorType::RandomPlayer,
+        "@n" => EntitySelectorType::NearestEntity,
+        _ => {
+            return Err(TargetSelectorParseError {
+                message: format!("Invalid target selector type {type_str}"),
+                cursor: selector_type_end.saturating_sub(1),
+            });
+        }
+    };
+
+    let mut selector = TargetSelector::new(selector_type);
+    if selector_type_end == arg.len() {
+        return Ok(selector);
+    }
+
+    if !arg.ends_with(']') {
+        return Err(TargetSelectorParseError {
+            message: "Target selector must end with ]".to_string(),
+            cursor: arg.len(),
+        });
+    }
+
+    let args_content = &arg[selector_type_end + 1..arg.len() - 1];
+    let mut filter_start = 0usize;
+    for (i, c) in args_content.char_indices() {
+        if c == ',' {
+            parse_selector_filter(
+                &mut selector,
+                &args_content[filter_start..i],
+                selector_type_end + 1 + filter_start,
+            )?;
+            filter_start = i + 1;
         }
     }
+    parse_selector_filter(
+        &mut selector,
+        &args_content[filter_start..],
+        selector_type_end + 1 + filter_start,
+    )?;
+
+    Ok(selector)
+}
+
+fn parse_selector_filter(
+    selector: &mut TargetSelector,
+    raw_filter: &str,
+    filter_offset: usize,
+) -> Result<(), TargetSelectorParseError> {
+    let trimmed_filter = raw_filter.trim();
+    if trimmed_filter.is_empty() {
+        return Ok(());
+    }
+
+    let local_trimmed_start = raw_filter
+        .char_indices()
+        .find_map(|(index, c)| (!c.is_whitespace()).then_some(index))
+        .unwrap_or(0);
+    let filter_cursor = filter_offset + local_trimmed_start;
+
+    let parsed_filter =
+        EntityFilter::from_str(trimmed_filter).map_err(|message| TargetSelectorParseError {
+            message,
+            cursor: filter_cursor,
+        })?;
+    selector.conditions.push(parsed_filter);
+    Ok(())
 }
 
 /// todo: implement (currently just calls [`super::arg_player::PlayerArgumentConsumer`])
@@ -251,7 +334,7 @@ impl ArgumentConsumer for EntitiesArgumentConsumer {
         server: &'a Server,
         args: &'b mut RawArgs<'a>,
     ) -> ConsumeResult<'a> {
-        let s_opt: Option<&'a str> = args.pop();
+        let s_opt: Option<&'a str> = args.pop().map(|arg| arg.value);
 
         let Some(s) = s_opt else {
             return Box::pin(async move { None });
@@ -260,7 +343,7 @@ impl ArgumentConsumer for EntitiesArgumentConsumer {
         let entity_selector = match s.parse::<TargetSelector>() {
             Ok(selector) => selector,
             Err(e) => {
-                log::debug!("Failed to parse target selector '{s}': {e}");
+                debug!("Failed to parse target selector '{s}': {e}");
                 return Box::pin(async move { None }); // Return a Future resolving to None
             }
         };
@@ -268,9 +351,30 @@ impl ArgumentConsumer for EntitiesArgumentConsumer {
         Box::pin(async move {
             // todo: command context
             // This is the required asynchronous operation.
-            let entities = server.select_entities(&entity_selector, Some(sender)).await;
+            let entities = server.select_entities(&entity_selector, Some(sender));
 
             Some(Arg::Entities(entities))
+        })
+    }
+
+    fn consume_with_syntax<'a>(
+        &'a self,
+        sender: &'a CommandSender,
+        server: &'a Server,
+        args: &mut RawArgs<'a>,
+    ) -> ConsumeResultWithSyntax<'a> {
+        let Some(raw_arg) = args.pop() else {
+            return Box::pin(async { Ok(None) });
+        };
+
+        let selector = match parse_target_selector_with_context(raw_arg) {
+            Ok(selector) => selector,
+            Err(error) => return Box::pin(async move { Err(error) }),
+        };
+
+        Box::pin(async move {
+            let entities = server.select_entities(&selector, Some(sender));
+            Ok(Some(Arg::Entities(entities)))
         })
     }
 }
@@ -289,5 +393,97 @@ impl<'a> FindArg<'a> for EntitiesArgumentConsumer {
             Some(Arg::Entities(data)) => Ok(data),
             _ => Err(CommandError::InvalidConsumption(Some(name.to_string()))),
         }
+    }
+}
+
+pub(crate) fn parse_target_selector_with_context(
+    raw_arg: RawArg<'_>,
+) -> Result<TargetSelector, CommandSyntaxError> {
+    parse_target_selector(raw_arg.value).map_err(|error| {
+        syntax_error_for_arg_with_cursor(
+            raw_arg,
+            TextComponent::translate(translation::ARGUMENT_ENTITY_INVALID, []),
+            error.cursor,
+        )
+    })
+}
+
+pub(crate) fn ensure_player_only_selector(
+    selector: &TargetSelector,
+    raw_arg: RawArg<'_>,
+) -> Result<(), CommandSyntaxError> {
+    if selector.includes_entities() {
+        Err(syntax_error_for_arg_with_cursor(
+            raw_arg,
+            TextComponent::translate(translation::ARGUMENT_PLAYER_ENTITIES, []),
+            0,
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn syntax_error_for_arg_with_cursor(
+    raw_arg: RawArg<'_>,
+    message: TextComponent,
+    local_cursor: usize,
+) -> CommandSyntaxError {
+    let mut clamped_local_cursor = local_cursor.min(raw_arg.value.len());
+    while clamped_local_cursor > 0 && !raw_arg.value.is_char_boundary(clamped_local_cursor) {
+        clamped_local_cursor -= 1;
+    }
+
+    CommandSyntaxError {
+        error_type: &error_types::DISPATCHER_UNKNOWN_ARGUMENT,
+        message,
+        context: Some(CommandSyntaxErrorContext {
+            input: raw_arg.input.to_string(),
+            cursor: raw_arg.start + clamped_local_cursor,
+        }),
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use pumpkin_data::translation;
+
+    use super::{TargetSelector, ensure_player_only_selector, parse_target_selector_with_context};
+    use crate::command::tree::RawArg;
+
+    #[test]
+    fn selector_parse_error_points_inside_token() {
+        let input = "ban @e[sort=invalid]";
+        let raw_arg = RawArg {
+            value: "@e[sort=invalid]",
+            start: 4,
+            end: input.len(),
+            input,
+        };
+
+        let Err(error) = parse_target_selector_with_context(raw_arg) else {
+            panic!("expected selector parsing to fail");
+        };
+        let cursor = error.context.unwrap().cursor;
+        assert_eq!(cursor, 7);
+    }
+
+    #[test]
+    fn player_only_error_points_to_selector_start() {
+        let input = "ban @e";
+        let raw_arg = RawArg {
+            value: "@e",
+            start: 4,
+            end: input.len(),
+            input,
+        };
+        let selector = "@e".parse::<TargetSelector>().unwrap();
+
+        let error = ensure_player_only_selector(&selector, raw_arg).unwrap_err();
+        let translate_key = match error.message.0.content.as_ref() {
+            pumpkin_util::text::TextContent::Translate { translate, .. } => translate.as_ref(),
+            _ => "",
+        };
+        assert_eq!(translate_key, translation::ARGUMENT_PLAYER_ENTITIES);
+        assert_eq!(error.context.unwrap().cursor, 4);
     }
 }

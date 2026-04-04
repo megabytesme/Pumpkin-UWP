@@ -1,7 +1,8 @@
 use std::io::Read;
 
 use pumpkin_data::packet::serverbound::PLAY_CHAT_SESSION_UPDATE;
-use pumpkin_macros::packet;
+use pumpkin_macros::java_packet;
+use pumpkin_util::version::MinecraftVersion;
 
 use crate::{
     ServerPacket,
@@ -9,7 +10,7 @@ use crate::{
 };
 
 #[derive(Debug)]
-#[packet(PLAY_CHAT_SESSION_UPDATE)]
+#[java_packet(PLAY_CHAT_SESSION_UPDATE)]
 pub struct SPlayerSession {
     pub session_id: uuid::Uuid,
     pub expires_at: i64,
@@ -18,7 +19,7 @@ pub struct SPlayerSession {
 }
 
 impl ServerPacket for SPlayerSession {
-    fn read(mut read: impl Read) -> Result<Self, ReadingError> {
+    fn read(mut read: impl Read, _version: &MinecraftVersion) -> Result<Self, ReadingError> {
         let session_id = read.get_uuid()?;
         let expires_at = read.get_i64_be()?;
 

@@ -1,4 +1,5 @@
 pub mod items;
+pub mod potion;
 pub mod registry;
 
 use std::any::Any;
@@ -11,9 +12,9 @@ use crate::server::Server;
 use pumpkin_data::Block;
 use pumpkin_data::BlockDirection;
 use pumpkin_data::item::Item;
+use pumpkin_data::item_stack::ItemStack;
 use pumpkin_util::math::position::BlockPos;
 use pumpkin_util::math::vector3::Vector3;
-use pumpkin_world::item::ItemStack;
 
 pub trait ItemMetadata {
     fn ids() -> Box<[u16]>;
@@ -28,12 +29,14 @@ pub trait ItemBehaviour: Send + Sync {
         Box::pin(async {})
     }
 
+    #[expect(clippy::too_many_arguments)]
     fn use_on_block<'a>(
         &'a self,
         _item: &'a mut ItemStack,
         _player: &'a Player,
         _location: BlockPos,
         _face: BlockDirection,
+        _cursor_pos: Vector3<f32>,
         _block: &'a Block,
         _server: &'a Server,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {

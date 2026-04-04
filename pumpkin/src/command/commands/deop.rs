@@ -1,13 +1,15 @@
 use crate::command::CommandResult;
-use crate::entity::EntityBase;
 use crate::{
     command::{
         CommandError, CommandExecutor, CommandSender,
-        args::{Arg, ConsumedArgs, players::PlayersArgumentConsumer},
+        args::{
+            Arg, ConsumedArgs,
+            gameprofile::{GameProfileSuggestionMode, GameProfilesArgumentConsumer},
+        },
         tree::CommandTree,
         tree::builder::argument,
     },
-    data::{SaveJSONConfiguration, op_data::OPERATOR_CONFIG},
+    data::SaveJSONConfiguration,
 };
 use CommandError::InvalidConsumption;
 use pumpkin_util::text::TextComponent;
@@ -26,41 +28,59 @@ impl CommandExecutor for Executor {
         args: &'a ConsumedArgs<'a>,
     ) -> CommandResult<'a> {
         Box::pin(async move {
-            let mut config = OPERATOR_CONFIG.write().await;
+            let mut config = server.data.operator_config.write().await;
 
-            let Some(Arg::Players(targets)) = args.get(&ARG_TARGETS) else {
+            let Some(Arg::GameProfiles(targets)) = args.get(&ARG_TARGETS) else {
                 return Err(InvalidConsumption(Some(ARG_TARGETS.into())));
             };
 
-            for player in targets {
-                if let Some(op_index) = config
-                    .ops
-                    .iter()
-                    .position(|o| o.uuid == player.gameprofile.id)
-                {
+            let mut succeeded_deops: i32 = 0;
+            for profile in targets {
+                if let Some(op_index) = config.ops.iter().position(|o| o.uuid == profile.id) {
                     config.ops.remove(op_index);
+                    succeeded_deops += 1;
+
+                    if let Some(player) = server.get_player_by_uuid(profile.id) {
+                        let command_dispatcher = server.command_dispatcher.read().await;
+                        player
+                            .set_permission_lvl(
+                                server,
+                                pumpkin_util::PermissionLvl::Zero,
+                                &command_dispatcher,
+                            )
+                            .await;
+                    }
+
+                    let msg = TextComponent::translate(
+                        "commands.deop.success",
+                        [TextComponent::text(profile.name.clone())],
+                    );
+                    sender.send_message(msg).await;
                 }
-                config.save();
-
-                {
-                    let command_dispatcher = server.command_dispatcher.read().await;
-                    player
-                        .set_permission_lvl(pumpkin_util::PermissionLvl::Zero, &command_dispatcher)
-                        .await;
-                };
-
-                let msg = TextComponent::translate(
-                    "commands.deop.success",
-                    [player.get_display_name().await],
-                );
-                sender.send_message(msg).await;
             }
-            Ok(())
+
+            if succeeded_deops > 0 {
+                config.save();
+            }
+
+            if succeeded_deops == 0 {
+                Err(CommandError::CommandFailed(TextComponent::translate(
+                    "commands.deop.failed",
+                    [],
+                )))
+            } else {
+                Ok(succeeded_deops)
+            }
         })
     }
 }
 
 pub fn init_command_tree() -> CommandTree {
-    CommandTree::new(NAMES, DESCRIPTION)
-        .then(argument(ARG_TARGETS, PlayersArgumentConsumer).execute(Executor))
+    CommandTree::new(NAMES, DESCRIPTION).then(
+        argument(
+            ARG_TARGETS,
+            GameProfilesArgumentConsumer::new(GameProfileSuggestionMode::OpNames, false),
+        )
+        .execute(Executor),
+    )
 }

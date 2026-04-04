@@ -1,13 +1,10 @@
 use pumpkin_util::text::{TextComponent, color::NamedColor, hover::HoverEvent};
 
-use crate::{
-    PLUGIN_MANAGER,
-    command::{
-        CommandExecutor, CommandResult, CommandSender, args::ConsumedArgs, tree::CommandTree,
-    },
+use crate::command::{
+    CommandExecutor, CommandResult, CommandSender, args::ConsumedArgs, tree::CommandTree,
 };
 
-const NAMES: [&str; 1] = ["plugins"];
+const NAMES: [&str; 2] = ["pl", "plugins"];
 
 const DESCRIPTION: &str = "List all available plugins.";
 
@@ -17,11 +14,11 @@ impl CommandExecutor for Executor {
     fn execute<'a>(
         &'a self,
         sender: &'a CommandSender,
-        _server: &'a crate::server::Server,
+        server: &'a crate::server::Server,
         _args: &'a ConsumedArgs<'a>,
     ) -> CommandResult<'a> {
         Box::pin(async move {
-            let plugins = PLUGIN_MANAGER.active_plugins().await;
+            let plugins = server.plugin_manager.active_plugins().await;
 
             let message_text = if plugins.is_empty() {
                 "There are no loaded plugins.".to_string()
@@ -34,13 +31,15 @@ impl CommandExecutor for Executor {
 
             for (i, metadata) in plugins.clone().into_iter().enumerate() {
                 let fmt = if i == plugins.len() - 1 {
-                    metadata.name.to_string()
+                    metadata.name.clone()
                 } else {
                     format!("{}, ", metadata.name)
                 };
                 let hover_text = format!(
                     "Version: {}\nAuthors: {}\nDescription: {}",
-                    metadata.version, metadata.authors, metadata.description
+                    metadata.version,
+                    metadata.authors.join(", "),
+                    metadata.description
                 );
                 let component = TextComponent::text(fmt)
                     .color_named(NamedColor::Green)
@@ -50,7 +49,7 @@ impl CommandExecutor for Executor {
 
             sender.send_message(message).await;
 
-            Ok(())
+            Ok(plugins.len() as i32)
         })
     }
 }

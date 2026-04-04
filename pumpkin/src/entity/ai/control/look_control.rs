@@ -3,7 +3,6 @@ use crate::entity::ai::control::Control;
 use crate::entity::mob::{Mob, MobEntity};
 use pumpkin_util::math::clamp_angle;
 use pumpkin_util::math::vector3::Vector3;
-use std::f32::consts::PI;
 use std::sync::Arc;
 
 // Please keep the atomic values out of here!!!
@@ -24,8 +23,8 @@ impl LookControl {
 
     pub fn look_at_entity(&mut self, mob: &dyn Mob, entity: &Arc<dyn EntityBase>) {
         let entity = entity.get_entity();
-        let pos = entity.pos.load();
-        self.look_at_position(mob, pos);
+        let pos = entity.get_eye_pos();
+        self.look_at(mob, pos.x, pos.y, pos.z);
     }
 
     pub fn look_at_entity_with_range(
@@ -36,7 +35,13 @@ impl LookControl {
     ) {
         let entity = entity.get_entity();
         let pos = entity.pos.load();
-        self.look_at_with_range(pos.x, pos.y, pos.z, max_yaw_change, max_pitch_change);
+        self.look_at_with_range(
+            pos.x,
+            entity.get_eye_y(),
+            pos.z,
+            max_yaw_change,
+            max_pitch_change,
+        );
     }
 
     pub fn look_at(&mut self, mob: &dyn Mob, x: f64, y: f64, z: f64) {
@@ -44,12 +49,12 @@ impl LookControl {
             x,
             y,
             z,
-            mob.get_max_look_yaw_change() as f32,
-            mob.get_max_look_pitch_change() as f32,
+            mob.get_max_look_yaw_change(),
+            mob.get_max_look_pitch_change(),
         );
     }
 
-    pub fn look_at_with_range(
+    pub const fn look_at_with_range(
         &mut self,
         x: f64,
         y: f64,
@@ -96,7 +101,7 @@ impl LookControl {
         self.clamp_head_yaw(mob).await;
     }
 
-    fn should_stay_horizontal() -> bool {
+    const fn should_stay_horizontal() -> bool {
         true
     }
 
@@ -105,7 +110,7 @@ impl LookControl {
         let navigator = mob_entity.navigator.lock().await;
         if !navigator.is_idle() {
             let entity = &mob_entity.living_entity.entity;
-            let max_head_rotation = mob.get_max_head_rotation() as f32;
+            let max_head_rotation = mob.get_max_head_rotation();
             entity.head_yaw.store(clamp_angle(
                 entity.head_yaw.load(),
                 entity.body_yaw.load(),
@@ -120,11 +125,11 @@ impl LookControl {
         let d = position.x - mob_position.x;
         let e = position.y - mob.living_entity.entity.get_eye_y();
         let f = position.z - mob_position.z;
-        let g = (d * d + f * f).sqrt();
+        let g = d.hypot(f);
         if e.abs() <= 1.0E-5 && g.abs() <= 1.0E-5 {
             None
         } else {
-            Some(-(e.atan2(g) as f32 * 180.0 / PI))
+            Some(-(e.atan2(g) as f32).to_degrees())
         }
     }
 
@@ -136,7 +141,7 @@ impl LookControl {
         if e.abs() <= 1.0E-5 && d.abs() <= 1.0E-5 {
             None
         } else {
-            Some(e.atan2(d) as f32 * 180.0 / PI - 90.0)
+            Some((e.atan2(d) as f32).to_degrees() - 90.0)
         }
     }
 }

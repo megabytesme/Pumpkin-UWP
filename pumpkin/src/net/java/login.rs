@@ -1,3 +1,4 @@
+use pumpkin_data::translation;
 use pumpkin_protocol::{
     ConnectionState, KnownPack, Label, Link, LinkType,
     java::client::{
@@ -9,6 +10,7 @@ use pumpkin_protocol::{
     },
 };
 use pumpkin_util::text::TextComponent;
+use tracing::debug;
 use uuid::Uuid;
 
 use crate::{
@@ -25,15 +27,15 @@ use crate::{
 
 impl JavaClient {
     pub async fn handle_login_start(&self, server: &Server, login_start: SLoginStart) {
-        log::debug!("login start");
+        debug!("login start");
 
         // Don't allow new logons when the server is full.
         // If `max_players` is set to zero, then there is no max player count enforced.
         // TODO: If client is an operator or has otherwise suitable elevated permissions, allow the client to bypass this requirement.
         let max_players = server.basic_config.max_players;
-        if max_players > 0 && server.get_player_count().await >= max_players as usize {
+        if max_players > 0 && server.get_player_count() >= max_players as usize {
             self.kick(TextComponent::translate(
-                "multiplayer.disconnect.server_full",
+                translation::MULTIPLAYER_DISCONNECT_SERVER_FULL,
                 [],
             ))
             .await;
@@ -90,7 +92,9 @@ impl JavaClient {
                 let verify_token: [u8; 4] = rand::random();
                 // Wait until we have sent the encryption packet to the client
                 self.send_packet_now(
-                    &server.encryption_request(&verify_token, server.basic_config.online_mode),
+                    &server
+                        .encryption_request(&verify_token, server.basic_config.online_mode)
+                        .await,
                 )
                 .await;
             } else {
@@ -106,8 +110,11 @@ impl JavaClient {
         server: &Server,
         encryption_response: SEncryptionResponse,
     ) {
-        log::debug!("Handling encryption");
-        let shared_secret = server.decrypt(&encryption_response.shared_secret).unwrap();
+        debug!("Handling encryption");
+        let shared_secret = server
+            .decrypt(&encryption_response.shared_secret)
+            .await
+            .unwrap();
 
         if let Err(error) = self.set_encryption(&shared_secret).await {
             self.kick(TextComponent::text(error.to_string())).await;
@@ -130,11 +137,12 @@ impl JavaClient {
                 Ok(new_profile) => *profile = new_profile,
                 Err(error) => {
                     self.kick(match error {
-                        AuthError::FailedResponse => {
-                            TextComponent::translate("multiplayer.disconnect.authservers_down", [])
-                        }
+                        AuthError::FailedResponse => TextComponent::translate(
+                            translation::MULTIPLAYER_DISCONNECT_AUTHSERVERS_DOWN,
+                            [],
+                        ),
                         AuthError::UnverifiedUsername => TextComponent::translate(
-                            "multiplayer.disconnect.unverified_username",
+                            translation::MULTIPLAYER_DISCONNECT_UNVERIFIED_USERNAME,
                             [],
                         ),
                         e => TextComponent::text(e.to_string()),
@@ -145,8 +153,8 @@ impl JavaClient {
         }
 
         // Don't allow duplicate UUIDs
-        if let Some(online_player) = &server.get_player_by_uuid(profile.id).await {
-            log::debug!(
+        if let Some(online_player) = &server.get_player_by_uuid(profile.id) {
+            debug!(
                 "Player (IP '{}', username '{}') tried to log in with the same UUID ('{}') as an online player (username '{}')",
                 &self.address.lock().await,
                 &profile.name,
@@ -154,7 +162,7 @@ impl JavaClient {
                 &online_player.gameprofile.name
             );
             self.kick(TextComponent::translate(
-                "multiplayer.disconnect.duplicate_login",
+                translation::MULTIPLAYER_DISCONNECT_DUPLICATE_LOGIN,
                 [],
             ))
             .await;
@@ -162,8 +170,8 @@ impl JavaClient {
         }
 
         // Don't allow a duplicate username
-        if let Some(online_player) = &server.get_player_by_name(&profile.name).await {
-            log::debug!(
+        if let Some(online_player) = &server.get_player_by_name(&profile.name) {
+            debug!(
                 "A player (IP '{}', attempted username '{}') tried to log in with the same username as an online player (UUID '{}', username '{}')",
                 &self.address.lock().await,
                 &profile.name,
@@ -171,7 +179,7 @@ impl JavaClient {
                 &online_player.gameprofile.name
             );
             self.kick(TextComponent::translate(
-                "multiplayer.disconnect.duplicate_login",
+                translation::MULTIPLAYER_DISCONNECT_DUPLICATE_LOGIN,
                 [],
             ))
             .await;
@@ -197,7 +205,7 @@ impl JavaClient {
     }
 
     async fn finish_login(&self, profile: &GameProfile) {
-        let packet = CLoginSuccess::new(&profile.id, &profile.name, &profile.properties);
+        let packet = CLoginSuccess::new(&profile.id, &profile.name, &profile.properties, false);
         self.send_packet_now(&packet).await;
     }
 
@@ -207,7 +215,7 @@ impl JavaClient {
         shared_secret: &[u8],
         username: &str,
     ) -> Result<GameProfile, AuthError> {
-        let hash = server.digest_secret(shared_secret);
+        let hash = server.digest_secret(shared_secret).await;
         let ip = self.address.lock().await.ip();
         let profile = authentication::authenticate(
             username,
@@ -256,7 +264,7 @@ impl JavaClient {
 
     pub fn handle_login_cookie_response(&self, packet: &SLoginCookieResponse) {
         // TODO: allow plugins to access this
-        log::debug!(
+        debug!(
             "Received cookie_response[login]: key: \"{}\", payload_length: \"{:?}\"",
             packet.key,
             packet.payload.as_ref().map(|p| p.len())
@@ -267,7 +275,7 @@ impl JavaClient {
         server: &Server,
         plugin_response: SLoginPluginResponse,
     ) {
-        log::debug!("Handling plugin");
+        debug!("Handling plugin");
         let velocity_config = &server.advanced_config.networking.proxy.velocity;
         if velocity_config.enabled {
             let mut address = self.address.lock().await;
@@ -288,7 +296,7 @@ impl JavaClient {
     }
 
     pub async fn handle_login_acknowledged(&self, server: &Server) {
-        log::debug!("Handling login acknowledgement");
+        debug!("Handling login acknowledgement");
         self.connection_state.store(ConnectionState::Config);
         self.send_packet_now(&server.get_branding()).await;
 
@@ -373,7 +381,7 @@ impl JavaClient {
             // This will be invoked by our resource pack handler in the case of the above branch.
             self.send_known_packs().await;
         }
-        log::debug!("login acknowledged");
+        debug!("login acknowledged");
     }
 
     /// Send the known data packs to the client.
@@ -381,7 +389,7 @@ impl JavaClient {
         self.send_packet_now(&CKnownPacks::new(&[KnownPack {
             namespace: "minecraft",
             id: "core",
-            version: "1.21.11",
+            version: "26.1",
         }]))
         .await;
     }

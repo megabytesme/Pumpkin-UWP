@@ -16,8 +16,6 @@ use crate::{
 };
 
 const EXPLOSION_POWER: f32 = 1.2;
-// square(3.5)
-const MAX_RENDER_DISTANCE_WHEN_NEWLY_SPAWNED: f32 = 3.5 * 3.5;
 const DEFAULT_DEFLECT_COOLDOWN: u8 = 5;
 
 pub struct WindChargeEntity {
@@ -27,7 +25,7 @@ pub struct WindChargeEntity {
 
 impl WindChargeEntity {
     #[must_use]
-    pub fn new(thrown_item_entity: ThrownItemEntity) -> Self {
+    pub const fn new(thrown_item_entity: ThrownItemEntity) -> Self {
         Self {
             deflect_cooldown: AtomicU8::new(DEFAULT_DEFLECT_COOLDOWN),
             thrown_item_entity,
@@ -45,30 +43,9 @@ impl WindChargeEntity {
     pub async fn create_explosion(&self, position: Vector3<f64>) {
         self.get_entity()
             .world
+            .load()
             .explode(position, EXPLOSION_POWER)
             .await;
-    }
-
-    pub fn should_render(&self, distance: f64) -> bool {
-        if self.get_entity().age.load(Ordering::Relaxed) < 2
-            && distance < f64::from(MAX_RENDER_DISTANCE_WHEN_NEWLY_SPAWNED)
-        {
-            return false;
-        }
-
-        let mut average_side_length = self
-            .get_entity()
-            .bounding_box
-            .load()
-            .get_average_side_length();
-
-        if average_side_length.is_nan() {
-            average_side_length = 1.0;
-        }
-
-        // TODO: IMPLEMENT renderDistanceMultiplier instead of the 1.0
-        average_side_length *= 64.0 * 1.0;
-        distance < average_side_length * average_side_length
     }
 
     pub fn deflect(
@@ -102,11 +79,11 @@ impl EntityBase for WindChargeEntity {
         server: &'a Server,
     ) -> EntityBaseFuture<'a, ()> {
         Box::pin(async move {
+            self.thrown_item_entity.process_tick(caller, server).await;
+
             if self.get_deflect_cooldown() > 0 {
                 self.set_deflect_cooldown(self.get_deflect_cooldown() - 1);
             }
-
-            self.thrown_item_entity.tick(caller, server).await;
         })
     }
 

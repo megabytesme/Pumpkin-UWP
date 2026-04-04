@@ -1,6 +1,6 @@
 use pumpkin_data::{
-    Block, BlockDirection,
-    block_properties::{BlockFace, HorizontalFacing},
+    Block, BlockDirection, HorizontalFacingExt,
+    block_properties::{AttachFace, HorizontalFacing},
 };
 use pumpkin_util::math::position::BlockPos;
 use pumpkin_world::{BlockStateId, world::BlockAccessor};
@@ -17,11 +17,11 @@ pub trait WallMountedBlock: Send + Sync {
         &self,
         player: &Player,
         direction: BlockDirection,
-    ) -> (BlockFace, HorizontalFacing) {
+    ) -> (AttachFace, HorizontalFacing) {
         let face = match direction {
-            BlockDirection::Up => BlockFace::Ceiling,
-            BlockDirection::Down => BlockFace::Floor,
-            _ => BlockFace::Wall,
+            BlockDirection::Up => AttachFace::Ceiling,
+            BlockDirection::Down => AttachFace::Floor,
+            _ => AttachFace::Wall,
         };
 
         let facing = if direction == BlockDirection::Up || direction == BlockDirection::Down {
@@ -31,6 +31,21 @@ pub trait WallMountedBlock: Send + Sync {
         };
 
         (face, facing)
+    }
+
+    /// Gets the direction to check for placement validation based on clicked face
+    /// This returns the `BlockDirection` that should have a solid surface for placement
+    fn get_placement_direction(
+        &self,
+        player: &Player,
+        direction: BlockDirection,
+    ) -> BlockDirection {
+        let (face, facing) = self.get_placement_face(player, direction);
+        match face {
+            AttachFace::Floor => BlockDirection::Up,
+            AttachFace::Ceiling => BlockDirection::Down,
+            AttachFace::Wall => facing.to_block_direction(),
+        }
     }
 
     fn can_place_at<'a>(

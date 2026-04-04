@@ -9,14 +9,19 @@ use std::{
 };
 use thiserror::Error;
 use tokio::sync::{Notify, RwLock};
+use tracing::{error, info};
 
 pub mod api;
 pub mod loader;
 
-use crate::{LOGGER_IMPL, PERMISSION_MANAGER, server::Server};
+use crate::{LOGGER_IMPL, plugin::loader::wasm::WasmPluginLoader, server::Server};
 pub use api::*;
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+/// Bump this whenever the public plugin API or any event layout changes in a way
+/// that makes old binary plugins incompatible.
+pub const PLUGIN_API_VERSION: u32 = 2;
 
 /// A trait for handling events dynamically.
 ///
@@ -63,7 +68,7 @@ pub trait EventHandler<E: Payload>: Send + Sync {
     ///
     /// # Arguments
     /// - `event`: A reference to the event to handle.
-    fn handle(&self, _server: &Arc<Server>, _event: &E) -> BoxFuture<'_, ()> {
+    fn handle<'a>(&'a self, _server: &'a Arc<Server>, _event: &'a E) -> BoxFuture<'a, ()> {
         Box::pin(async {})
     }
 
@@ -143,7 +148,7 @@ where
 type HandlerMap = HashMap<&'static str, Vec<Box<dyn DynEventHandler>>>;
 
 /// Plugin loading state
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PluginState {
     Loading,
     Loaded,
@@ -171,7 +176,7 @@ pub struct PluginManager {
 /// OS specific issues
 /// - Windows: Plugin cannot be unloaded, it can be only active or not
 struct LoadedPlugin {
-    metadata: PluginMetadata<'static>,
+    metadata: PluginMetadata,
     instance: Option<Box<dyn Plugin>>,
     loader: Arc<dyn PluginLoader>,
     loader_data: Option<Box<dyn Any + Send + Sync>>,
@@ -202,7 +207,10 @@ impl Default for PluginManager {
     fn default() -> Self {
         Self {
             plugins: RwLock::new(Vec::new()),
-            loaders: RwLock::new(vec![Arc::new(NativePluginLoader)]),
+            loaders: RwLock::new(vec![
+                Arc::new(NativePluginLoader),
+                Arc::new(WasmPluginLoader),
+            ]),
             server: RwLock::new(None),
             handlers: Arc::new(RwLock::new(HashMap::new())),
             unloaded_files: RwLock::new(HashSet::new()),
@@ -228,13 +236,13 @@ impl PluginManager {
             plugins
                 .iter()
                 .filter(|p| p.is_active)
-                .map(|p| p.metadata.name.to_string())
+                .map(|p| p.metadata.name.clone())
                 .collect()
         };
 
         for name in plugin_names {
             if let Err(e) = self.unload_plugin(&name).await {
-                log::error!("Failed to unload plugin {name}: {e}");
+                error!("Failed to unload plugin {name}: {e}");
             }
         }
 
@@ -310,9 +318,18 @@ impl PluginManager {
                 continue;
             }
 
+            if path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("deactivated"))
+            {
+                continue;
+            }
+
             // Start loading plugin concurrently
-            if let Ok(task) = self.start_loading_plugin(&path).await {
-                load_tasks.push(task);
+            match self.start_loading_plugin(&path).await {
+                Ok(task) => load_tasks.push(task),
+                Err(err) => error!("{}", err),
             }
         }
 
@@ -336,7 +353,7 @@ impl PluginManager {
                 self.plugin_states
                     .write()
                     .await
-                    .insert(metadata.name.to_string(), PluginState::Loading);
+                    .insert(metadata.name.clone(), PluginState::Loading);
 
                 let self_ref = self
                     .self_ref
@@ -357,7 +374,6 @@ impl PluginManager {
                     ),
                     Arc::clone(&self.handlers),
                     Arc::clone(&self_ref),
-                    Arc::clone(&PERMISSION_MANAGER),
                     Arc::clone(&LOGGER_IMPL),
                 ));
 
@@ -383,7 +399,7 @@ impl PluginManager {
                 // Spawn async task for plugin initialization
                 let self_ref_clone = Arc::clone(&self_ref);
                 let state_notify = Arc::clone(&self.state_notify);
-                let plugin_name = metadata.name.to_string();
+                let plugin_name = metadata.name.clone();
                 let loader_clone = loader.clone();
 
                 let task = tokio::spawn(async move {
@@ -405,7 +421,7 @@ impl PluginManager {
                                 .insert(plugin_name.clone(), PluginState::Loaded);
                             state_notify.notify_waiters();
 
-                            log::info!("Loaded {} ({})", metadata.name, metadata.version);
+                            info!("Loaded {} ({})", metadata.name, metadata.version);
                         }
                         Err(e) => {
                             // Handle initialization failure
@@ -441,7 +457,7 @@ impl PluginManager {
                             );
                             state_notify.notify_waiters();
 
-                            log::error!("Failed to initialize plugin {plugin_name}: {error_msg}",);
+                            error!("Failed to initialize plugin {plugin_name}: {error_msg}",);
                         }
                     }
                 });
@@ -506,7 +522,7 @@ impl PluginManager {
 
     /// Get list of active plugins
     #[must_use]
-    pub async fn active_plugins(&self) -> Vec<PluginMetadata<'static>> {
+    pub async fn active_plugins(&self) -> Vec<PluginMetadata> {
         let plugins = self.plugins.read().await;
         plugins
             .iter()
@@ -524,7 +540,7 @@ impl PluginManager {
 
     /// Get list of loaded plugins
     #[must_use]
-    pub async fn loaded_plugins(&self) -> Vec<PluginMetadata<'static>> {
+    pub async fn loaded_plugins(&self) -> Vec<PluginMetadata> {
         let plugins = self.plugins.read().await;
         plugins.iter().map(|p| p.metadata.clone()).collect()
     }
