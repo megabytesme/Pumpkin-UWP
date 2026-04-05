@@ -3111,6 +3111,7 @@ dependencies = [
 name = "pumpkin-uwp"
 version = "0.1.0-dev+26.1"
 dependencies = [
+ "colored",
  "pumpkin",
  "pumpkin-config",
  "pumpkin-data",
@@ -4422,6 +4423,7 @@ dependencies = [
  "serde_json",
  "ureq-proto",
  "utf8-zero",
+ "webpki-roots",
 ]
 
 [[package]]
@@ -5032,6 +5034,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "723f2473b47f738c12fc11c8e0bb8b27ce7cf9c78cf1a29dadbc2d34a2513292"
 dependencies = [
  "wast 246.0.1",
+]
+
+[[package]]
+name = "webpki-roots"
+version = "1.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "22cfaf3c063993ff62e73cb4311efde4db1efb31ab78a3e5c457939ad5cc0bed"
+dependencies = [
+ "rustls-pki-types",
 ]
 
 [[package]]

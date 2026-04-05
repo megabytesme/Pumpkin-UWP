@@ -1,7 +1,9 @@
 use std::{fs, path::Path, sync::Arc};
 use thiserror::Error;
 use tokio::sync::Mutex;
-use wasmtime::{Cache, CacheConfig, Engine, Store, component::Component};
+#[cfg(not(target_vendor = "uwp"))]
+use wasmtime::{Cache, CacheConfig};
+use wasmtime::{Engine, Store, component::Component};
 use wasmtime_wasi::WasiCtxBuilder;
 
 use crate::plugin::{Context, PluginMetadata, loader::wasm::wasm_host::state::PluginHostState};
@@ -51,11 +53,16 @@ impl PluginRuntime {
         let mut path = std::path::absolute(path.as_ref()).expect("Failed to get absolute path");
         path.pop();
         path.push("cache");
-        let mut cache_config = CacheConfig::new();
-        cache_config.with_directory(&path);
-        config.cache(Some(
-            Cache::new(cache_config).expect("Failed to create cache"),
-        ));
+
+        #[cfg(not(target_vendor = "uwp"))]
+        {
+            let mut cache_config = CacheConfig::new();
+            cache_config.with_directory(&path);
+            config.cache(Some(
+                Cache::new(cache_config).expect("Failed to create cache"),
+            ));
+        }
+
         let engine = Engine::new(&config).map_err(PluginInitError::EngineCreationFailed)?;
 
         let linker_v0_1_0 =

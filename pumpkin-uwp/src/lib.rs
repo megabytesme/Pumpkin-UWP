@@ -1,9 +1,9 @@
 use pumpkin::PumpkinServer;
 use pumpkin::command::CommandSender;
+use pumpkin::data::VanillaData;
 use pumpkin::entity::player::Player;
 use pumpkin::net::ClientPlatform;
 use pumpkin::server::Server;
-use pumpkin::data::VanillaData;
 use pumpkin_config::LoadConfiguration;
 use pumpkin_protocol::java::client::play::CommandSuggestion;
 use serde::Serialize;
@@ -289,12 +289,20 @@ pub extern "C" fn pumpkin_inject_command(cmd_utf8: *const c_char) {
             if let Some(rt) = RUNTIME.get() {
                 rt.spawn(async move {
                     let dispatcher = server_ref.command_dispatcher.read().await;
-                    let source = pumpkin::command::CommandSender::Console
+                    let output = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+                    let source = pumpkin::command::CommandSender::Rcon(output.clone())
                         .into_source(&server_ref)
                         .await;
-                    dispatcher
-                        .handle_command(&source, &command)
-                        .await;
+
+                    info!("Executing command: /{}", command);
+                    dispatcher.handle_command(&source, &command).await;
+
+                    let command_output = output.lock().await.clone();
+                    drop(dispatcher);
+
+                    for line in command_output {
+                        send_to_csharp(&line);
+                    }
                 });
             }
         }
@@ -305,6 +313,7 @@ pub extern "C" fn pumpkin_inject_command(cmd_utf8: *const c_char) {
 pub extern "C" fn pumpkin_run_from_config_dir(config_dir_utf8: *const c_char) -> i32 {
     let result = std::panic::catch_unwind(|| unsafe {
         let _ = rustls_rustcrypto::provider().install_default();
+        colored::control::set_override(true);
 
         let startup_time = std::time::Instant::now();
 

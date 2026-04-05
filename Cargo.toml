@@ -177,7 +177,7 @@ time = "0.3"
 arc-swap = "1.9"
 tokio-util = "0.7.18"
 toml = "1.1"
-ureq = { version = "3.3.0", default-features = false, features = ["rustls-no-provider", "json"] }
+ureq = { version = "3.3.0", default-features = false, features = ["rustls-no-provider", "rustls-webpki-roots", "json"] }
 rustls = { version = "0.23", default-features = false, features = ["std", "tls12"] }
 rustls-rustcrypto = "0.0.2-alpha"
 webpki-roots = "0.26"

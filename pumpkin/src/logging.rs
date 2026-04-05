@@ -2,26 +2,39 @@
 #![allow(clippy::print_stdout)]
 
 use flate2::write::GzEncoder;
+#[cfg(feature = "interactive-console")]
 use rustyline::completion::Completer;
+#[cfg(feature = "interactive-console")]
 use rustyline::highlight::Highlighter;
+#[cfg(feature = "interactive-console")]
 use rustyline::hint::Hinter;
+#[cfg(feature = "interactive-console")]
 use rustyline::history::FileHistory;
+#[cfg(feature = "interactive-console")]
 use rustyline::validate::Validator;
+#[cfg(feature = "interactive-console")]
 use rustyline::{Editor, Helper};
+#[cfg(feature = "interactive-console")]
 use std::borrow::Cow;
+#[cfg(feature = "interactive-console")]
 use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::PathBuf;
+#[cfg(feature = "interactive-console")]
 use std::sync::Arc;
 use time::{Duration, OffsetDateTime};
 use tracing::Subscriber;
 use tracing_subscriber::Layer;
 use tracing_subscriber::filter::LevelFilter;
 
+#[cfg(feature = "interactive-console")]
 use crate::command::CommandSender;
+#[cfg(feature = "interactive-console")]
 use crate::command::string_reader::StringReader;
+#[cfg(feature = "interactive-console")]
 use crate::command::tree::NodeType;
+#[cfg(feature = "interactive-console")]
 use crate::server::Server;
 
 pub type LogCallbackFn = unsafe extern "C" fn(*const std::os::raw::c_char);
@@ -89,6 +102,7 @@ const MAX_ATTEMPTS: u32 = 1000;
 /// A wrapper for our logger to hold the terminal input while no input is expected in order to
 /// properly flush logs to the output while they happen instead of batched
 pub struct ReadlineLogWrapper {
+    #[cfg(feature = "interactive-console")]
     readline: std::sync::Mutex<Option<Editor<PumpkinCommandCompleter, FileHistory>>>,
 }
 
@@ -329,6 +343,7 @@ impl tracing::field::Visit for StringVisitor {
 }
 
 impl ReadlineLogWrapper {
+    #[cfg(feature = "interactive-console")]
     #[must_use]
     pub const fn new(rl: Option<Editor<PumpkinCommandCompleter, FileHistory>>) -> Self {
         Self {
@@ -336,12 +351,20 @@ impl ReadlineLogWrapper {
         }
     }
 
+    #[cfg(not(feature = "interactive-console"))]
+    #[must_use]
+    pub const fn new(_rl: Option<()>) -> Self {
+        Self {}
+    }
+
+    #[cfg(feature = "interactive-console")]
     pub fn take_readline(&self) -> Option<Editor<PumpkinCommandCompleter, FileHistory>> {
         self.readline
             .lock()
             .map_or_else(|_| None, |mut result| result.take())
     }
 
+    #[cfg(feature = "interactive-console")]
     // This isn't really dead code. It is just only used by the lib and not the bin for this
     // crate, and as such creates a compiler warning.
     #[allow(dead_code)]
@@ -352,12 +375,14 @@ impl ReadlineLogWrapper {
     }
 }
 
+#[cfg(feature = "interactive-console")]
 #[derive(Clone, Default)]
 pub struct PumpkinCommandCompleter {
     pub server: Arc<std::sync::RwLock<Option<Arc<Server>>>>,
     pub rt: Arc<std::sync::OnceLock<tokio::runtime::Handle>>,
 }
 
+#[cfg(feature = "interactive-console")]
 impl PumpkinCommandCompleter {
     #[must_use]
     pub fn new() -> Self {
@@ -368,7 +393,9 @@ impl PumpkinCommandCompleter {
     }
 }
 
+#[cfg(feature = "interactive-console")]
 impl Helper for PumpkinCommandCompleter {}
+#[cfg(feature = "interactive-console")]
 impl Highlighter for PumpkinCommandCompleter {
     fn highlight<'l>(&self, line: &'l str, _pos: usize) -> Cow<'l, str> {
         line.find(' ').map_or_else(
@@ -380,6 +407,7 @@ impl Highlighter for PumpkinCommandCompleter {
         )
     }
 }
+#[cfg(feature = "interactive-console")]
 impl Hinter for PumpkinCommandCompleter {
     type Hint = String;
     fn hint(&self, line: &str, pos: usize, ctx: &rustyline::Context<'_>) -> Option<Self::Hint> {
@@ -403,8 +431,10 @@ impl Hinter for PumpkinCommandCompleter {
     }
 }
 
+#[cfg(feature = "interactive-console")]
 impl Validator for PumpkinCommandCompleter {}
 
+#[cfg(feature = "interactive-console")]
 impl Completer for PumpkinCommandCompleter {
     type Candidate = String;
 

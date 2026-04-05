@@ -18,3 +18,4 @@ tokio.workspace = true
 rustls.workspace = true
 rustls-rustcrypto.workspace = true
 tracing.workspace = true
+colored.workspace = true

@@ -2,7 +2,9 @@
 #![allow(unused_labels)]
 
 use crate::data::VanillaData;
-use crate::logging::{GzipRollingLogger, PumpkinCommandCompleter, ReadlineLogWrapper};
+#[cfg(feature = "interactive-console")]
+use crate::logging::PumpkinCommandCompleter;
+use crate::logging::{GzipRollingLogger, ReadlineLogWrapper};
 use crate::net::bedrock::BedrockClient;
 use crate::net::java::{JavaClient, PacketHandlerResult};
 use crate::net::{ClientPlatform, DisconnectReason};
@@ -12,12 +14,17 @@ use plugin::server::server_command::ServerCommandEvent;
 use pumpkin_config::{AdvancedConfiguration, BasicConfiguration};
 use pumpkin_macros::send_cancellable;
 use pumpkin_util::text::TextComponent;
+#[cfg(feature = "interactive-console")]
 use rustyline::Editor;
+#[cfg(feature = "interactive-console")]
 use rustyline::history::FileHistory;
+#[cfg(feature = "interactive-console")]
 use rustyline::{Config, error::ReadlineError};
 use std::collections::HashMap;
 use std::future::Future;
-use std::io::{Cursor, ErrorKind, IsTerminal, stdin};
+#[cfg(feature = "interactive-console")]
+use std::io::IsTerminal;
+use std::io::{Cursor, ErrorKind, stdin};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -95,10 +102,11 @@ pub fn init_logger(
                     config_dir,
                     external_callback,
                 )
-                    .expect("Failed to initialize file logger."),
+                .expect("Failed to initialize file logger."),
             )
         };
 
+        #[cfg(feature = "interactive-console")]
         let (logger, rl): (
             Box<dyn std::io::Write + Send + 'static>,
             Option<Editor<PumpkinCommandCompleter, FileHistory>>,
@@ -125,6 +133,10 @@ pub fn init_logger(
         } else {
             (Box::new(std::io::stdout()), None)
         };
+
+        #[cfg(not(feature = "interactive-console"))]
+        let (logger, rl): (Box<dyn std::io::Write + Send + 'static>, Option<()>) =
+            (Box::new(std::io::stdout()), None);
 
         let fmt_layer = fmt::layer()
             .with_writer(std::sync::Mutex::new(logger))
@@ -244,14 +256,25 @@ impl PumpkinServer {
         let rcon = server.advanced_config.networking.rcon.clone();
 
         if server.advanced_config.commands.use_console
-            && let Some((wrapper, _, _)) = LOGGER_IMPL.wait()
+            && let Some((_wrapper, _, _)) = LOGGER_IMPL.wait()
         {
-            if let Some(rl) = wrapper.take_readline() {
+            #[cfg(feature = "interactive-console")]
+            if let Some(rl) = _wrapper.take_readline() {
                 setup_console(rl, server.clone());
             } else {
                 if server.advanced_config.commands.use_tty {
                     warn!(
                         "The input is not a TTY; falling back to simple logger and ignoring `use_tty` setting"
+                    );
+                }
+                setup_stdin_console(server.clone());
+            }
+
+            #[cfg(not(feature = "interactive-console"))]
+            {
+                if server.advanced_config.commands.use_tty {
+                    warn!(
+                        "Interactive console support is disabled in this build; falling back to simple logger and ignoring `use_tty` setting"
                     );
                 }
                 setup_stdin_console(server.clone());
@@ -414,6 +437,7 @@ impl PumpkinServer {
 
         info!("Completed save!");
 
+        #[cfg(feature = "interactive-console")]
         if let Some((wrapper, _, _)) = LOGGER_IMPL.wait()
             && let Some(rl) = wrapper.take_readline()
         {
@@ -591,6 +615,7 @@ fn setup_stdin_console(server: Arc<Server>) {
     });
 }
 
+#[cfg(feature = "interactive-console")]
 fn setup_console(mut rl: Editor<PumpkinCommandCompleter, FileHistory>, server: Arc<Server>) {
     let (tx, mut rx) = tokio::sync::mpsc::channel(1);
 

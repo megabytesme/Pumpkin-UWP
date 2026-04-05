@@ -46,7 +46,7 @@ pub fn set_data_root(path: PathBuf) {
     let _ = OVERRIDE_DATA_ROOT.set(path);
 }
 
-fn get_base_dir() -> PathBuf {
+pub(crate) fn get_base_dir() -> PathBuf {
     OVERRIDE_DATA_ROOT
         .get()
         .cloned()

@@ -467,10 +467,10 @@ impl Server {
         let level_data = self.level_info.load();
         // then lets save the world info
 
-        if let Err(err) = self
-            .world_info_writer
-            .write_world_info(&level_data, &self.config_dir.join(self.basic_config.get_world_path()))
-        {
+        if let Err(err) = self.world_info_writer.write_world_info(
+            &level_data,
+            &self.config_dir.join(self.basic_config.get_world_path()),
+        ) {
             error!("Failed to save level.dat: {err}");
         }
         info!("Completed worlds");

@@ -1,6 +1,6 @@
 use std::cmp::Reverse;
 use std::collections::HashMap;
-use std::{env, fs};
+use std::fs;
 
 use chrono::{DateTime, FixedOffset, Local, Months, TimeDelta, Utc};
 use serde::{Deserialize, Serialize};
@@ -36,8 +36,7 @@ pub struct UserCache {
 
 impl UserCache {
     fn path() -> std::path::PathBuf {
-        env::current_dir()
-            .unwrap_or_else(|_| ".".into())
+        super::get_base_dir()
             .join(super::DATA_FOLDER)
             .join(USER_CACHE_PATH)
     }

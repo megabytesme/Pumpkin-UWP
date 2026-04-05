@@ -158,7 +158,10 @@ impl CachedStatus {
                         return Some(load_icon_from_bytes(DEFAULT_ICON));
                     }
                     let icon_path = config_dir.join(icon_path);
-                    debug!("Attempting to load server favicon from '{}'", icon_path.display());
+                    debug!(
+                        "Attempting to load server favicon from '{}'",
+                        icon_path.display()
+                    );
 
                     match load_icon_from_file(&icon_path) {
                         Ok(icon) => Some(icon),

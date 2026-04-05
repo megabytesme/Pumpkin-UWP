@@ -55,7 +55,7 @@ rand.workspace = true
 num-bigint.workspace = true
 
 # Console line reading
-rustyline.workspace = true
+rustyline = { workspace = true, optional = true }
 
 # encryption
 rsa.workspace = true
@@ -102,6 +102,8 @@ bitflags = { workspace = true }
 tempfile.workspace = true
 
 [features]
+default = ["interactive-console"]
+interactive-console = ["dep:rustyline"]
 console-subscriber = ["dep:console-subscriber"]
 tokio_taskdump = ["pumpkin-world/tokio_taskdump"]
 

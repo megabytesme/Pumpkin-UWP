@@ -46,6 +46,7 @@ try {
     cargo +nightly build -Z "build-std=std,panic_abort" `
         --target x86_64-uwp-windows-msvc `
         --target-dir $BuildDir `
+        -p pumpkin-uwp `
         --release `
         --no-default-features
 

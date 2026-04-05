@@ -17,7 +17,22 @@ $RegistryBase = Join-Path $env:USERPROFILE ".cargo\registry\src"
 $RegistrySrc = Get-ChildItem -Path $RegistryBase -Filter "index.crates.io-*" | Select-Object -First 1
 
 if ($RegistrySrc) {
-    $StructsToPatch = @("WSADATA", "SERVENT", "DELAYLOAD_INFO")
+    $SymbolsToPatch = @(
+        "WSADATA",
+        "SERVENT",
+        "DELAYLOAD_INFO",
+        "CONTEXT",
+        "SLIST_HEADER",
+        "APPBARDATA",
+        "SHCREATEPROCESSINFOW",
+        "SHFILEOPSTRUCTA",
+        "SHFILEOPSTRUCTW",
+        "SHQUERYRBINFO",
+        "NOTIFYICONIDENTIFIER",
+        "MINIDUMP_THREAD_CALLBACK",
+        "MINIDUMP_THREAD_EX_CALLBACK",
+        "XSAVE_FORMAT"
+    )
     $PackageDirs = Get-ChildItem -Path $RegistrySrc.FullName -Directory -Filter "windows-sys-*"
     $PatchCount = 0
 
@@ -30,18 +45,64 @@ if ($RegistrySrc) {
             $ChecksumJson = Get-Content $ChecksumFile -Raw | ConvertFrom-Json
         }
 
-        # Find candidate files
-        $SourceFiles = Get-ChildItem -Path $PackageDir.FullName -Recurse -Filter "*.rs" | 
-        Select-String -Pattern ($StructsToPatch -join "|") -List | 
-        Select-Object -ExpandProperty Path
+        $AllRustFiles = Get-ChildItem -Path $PackageDir.FullName -Recurse -Filter "*.rs"
+        $SourceFiles = $AllRustFiles |
+            Select-String -Pattern ($SymbolsToPatch -join "|") -List |
+            Select-Object -ExpandProperty Path
+
+        # Newer windows-sys releases have many ARM32-relevant items guarded only by x86 cfgs.
+        # For these crates, widen the raw cfg gate everywhere before the more targeted symbol pass.
+        foreach ($FileInfo in $AllRustFiles) {
+            $File = $FileInfo.FullName
+            $Content = Get-Content $File -Raw
+            $OriginalContent = $Content
+
+            $Content = $Content.Replace(
+                '#[cfg(target_arch = "x86")]',
+                '#[cfg(any(target_arch = "x86", target_arch = "arm"))]'
+            )
+
+            $Content = [regex]::Replace(
+                $Content,
+                '#\[cfg\((any|all)\((?<inner>[^\]]*target_arch = "x86"[^\]]*)\)\)\]',
+                {
+                    param($match)
+
+                    $inner = $match.Groups["inner"].Value
+                    if ($inner.Contains('target_arch = "arm"')) {
+                        return $match.Value
+                    }
+
+                    $expandedInner = $inner.Replace(
+                        'target_arch = "x86"',
+                        'target_arch = "x86", target_arch = "arm"'
+                    )
+
+                    return "#[cfg($($match.Groups[1].Value)($expandedInner))]"
+                }
+            )
+
+            if ($Content -ne $OriginalContent) {
+                Set-Content -Path $File -Value $Content -NoNewline
+                $PatchCount++
+
+                if ($ChecksumJson) {
+                    $RelativePath = $File.Substring($PackageDir.FullName.Length + 1).Replace('\', '/')
+                    if ($ChecksumJson.files.$RelativePath) {
+                        $ChecksumJson.files.PSObject.Properties.Remove($RelativePath)
+                        $ChecksumModified = $true
+                    }
+                }
+            }
+        }
 
         foreach ($File in $SourceFiles) {
             $Content = Get-Content $File -Raw
             $FileModified = $false
             
-            foreach ($StructName in $StructsToPatch) {
-                # Look for the specific x86-only definition
-                $Pattern = '(?s)(#\[cfg\(target_arch = "x86"\)\])(\s*(?:#\[[^\]]+\]\s*)*)(pub struct ' + $StructName + '\b|impl Default for ' + $StructName + '\b)'
+            foreach ($SymbolName in $SymbolsToPatch) {
+                # Look for the specific x86-only definition and widen it to include ARM32.
+                $Pattern = '(?s)(#\[cfg\(target_arch = "x86"\)\])(\s*(?:#\[[^\]]+\]\s*)*)(pub struct ' + $SymbolName + '\b|pub union ' + $SymbolName + '\b|pub type ' + $SymbolName + '\b|impl Default for ' + $SymbolName + '\b)'
 
                 if ($Content -match $Pattern) {
                     # Inject 'arm' support
@@ -121,6 +182,13 @@ try {
     }
 
     $env:LIB = "$HybridDir;$SdkBase\um\arm;$SdkBase\ucrt\arm"
+    $PreviousRustFlags = $env:RUSTFLAGS
+    if ([string]::IsNullOrWhiteSpace($PreviousRustFlags)) {
+        $env:RUSTFLAGS = "-C target-feature=-neon"
+    }
+    else {
+        $env:RUSTFLAGS = "$PreviousRustFlags -C target-feature=-neon"
+    }
 
     # --- BUILD ---
     Write-Host "Building Pumpkin (ARM32)..." -ForegroundColor Green
@@ -128,6 +196,7 @@ try {
     cargo +nightly build -Z "build-std=std,panic_abort" `
         --target thumbv7a-uwp-windows-msvc `
         --target-dir $BuildDir `
+        -p pumpkin-uwp `
         --release `
         --no-default-features
 
@@ -142,6 +211,7 @@ catch {
     Write-Error "Build Failed: $_"
 }
 finally {
+    $env:RUSTFLAGS = $PreviousRustFlags
     if (Test-Path $HybridDir) {
         Write-Host "Cleaning up temporary libraries..." -ForegroundColor Gray
         Remove-Item -Path $HybridDir -Recurse -Force

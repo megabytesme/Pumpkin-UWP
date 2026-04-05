@@ -104,7 +104,8 @@ async fn main() {
             .expect("Unable to setup signal handlers");
     });
 
-    let pumpkin_server = PumpkinServer::new(basic_config, advanced_config, &config_dir, vanilla_data).await;
+    let pumpkin_server =
+        PumpkinServer::new(basic_config, advanced_config, &config_dir, vanilla_data).await;
     pumpkin_server.init_plugins().await;
 
     info!(

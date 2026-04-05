@@ -195,9 +195,9 @@ impl ChunkHeightmaps {
         let local_x = (pos.0.x & 15) as usize;
         let local_z = (pos.0.z & 15) as usize;
 
-        let adjust_height = (pos.0.y + min_y.abs()) as usize;
+        let adjust_height = i64::from(pos.0.y + min_y.abs());
 
-        assert!(adjust_height <= 2 << 9);
+        assert!(adjust_height <= i64::from(2 << 9));
 
         //chunk column index in 16*16 chunk.
         let column_idx = local_z * 16 + local_x;
@@ -219,10 +219,7 @@ impl ChunkHeightmaps {
             }
         };
 
-        let height_bit_bytes = adjust_height
-            .wrapping_shl(64 - 9 - packed_array_bit_start_idx)
-            .to_ne_bytes();
-        let height = i64::from_ne_bytes(height_bit_bytes);
+        let height = adjust_height.wrapping_shl(64 - 9 - packed_array_bit_start_idx);
 
         let packed_array_idx = column_idx / 7;
 
